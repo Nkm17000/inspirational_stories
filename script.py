@@ -36,16 +36,16 @@ STYLE = "cinematic, realistic, 4k, emotional lighting, same character"
 # STORY
 # =========================
 scenes = [
-    {"text": "You won’t believe what this son did...", "image_prompt": f"{CHARACTER}, {STYLE}"},
-    {"text": "Raju lived in a small village with his father...", "image_prompt": f"{CHARACTER} with {FATHER}, {STYLE}"},
-    {"text": "His father worked day and night in the fields...", "image_prompt": f"{FATHER} working hard, {STYLE}"},
-    {"text": "But Raju never cared about his father's struggles...", "image_prompt": f"{CHARACTER} ignoring {FATHER}, {STYLE}"},
-    {"text": "He spent his time playing and wasting his days...", "image_prompt": f"{CHARACTER} playing, {STYLE}"},
-    {"text": "One day... his father fell seriously ill...", "image_prompt": f"{FATHER} sick, {STYLE}"},
-    {"text": "For the first time... Raju felt fear and guilt...", "image_prompt": f"{CHARACTER} crying, {STYLE}"},
-    {"text": "He realized how much his father had sacrificed...", "image_prompt": f"{CHARACTER} emotional flashback, {STYLE}"},
-    {"text": "The next morning... everything changed...", "image_prompt": f"{CHARACTER} determined, sunrise, {STYLE}"},
-    {"text": "Raju went to the fields and started working hard...", "image_prompt": f"{CHARACTER} working, {STYLE}"},
+{"text": "You won’t believe what this son did...", "image_prompt": f"{CHARACTER}, {STYLE}"},
+{"text": "Raju lived in a small village with his father...", "image_prompt": f"{CHARACTER} with {FATHER}, {STYLE}"},
+{"text": "His father worked day and night in the fields...", "image_prompt": f"{FATHER} working hard, {STYLE}"},
+{"text": "But Raju never cared about his father's struggles...", "image_prompt": f"{CHARACTER} ignoring {FATHER}, {STYLE}"},
+{"text": "He spent his time playing and wasting his days...", "image_prompt": f"{CHARACTER} playing, {STYLE}"},
+{"text": "One day... his father fell seriously ill...", "image_prompt": f"{FATHER} sick, {STYLE}"},
+{"text": "For the first time... Raju felt fear and guilt...", "image_prompt": f"{CHARACTER} crying, {STYLE}"},
+{"text": "He realized how much his father had sacrificed...", "image_prompt": f"{CHARACTER} emotional flashback, {STYLE}"},
+{"text": "The next morning... everything changed...", "image_prompt": f"{CHARACTER} determined, sunrise, {STYLE}"},
+{"text": "Raju went to the fields and started working hard...", "image_prompt": f"{CHARACTER} working, {STYLE}"},
 ]
 
 # =========================
@@ -53,11 +53,12 @@ scenes = [
 # =========================
 def generate_image(prompt, path):
     url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
-
+    time.sleep(5)
     for i in range(3):
         try:
             print(f"🖼️ Image attempt {i+1}", flush=True)
-            time.sleep(3)
+
+            time.sleep(5)  # ✅ REQUIRED DELAY BEFORE API
 
             r = requests.get(url, timeout=20)
             if r.status_code == 200:
@@ -72,9 +73,8 @@ def generate_image(prompt, path):
     print("❌ Image failed, using fallback", flush=True)
     return None
 
-
 # =========================
-# VOICE (SAFE ASYNC)
+# VOICE
 # =========================
 def generate_voice(text, path):
     async def tts():
@@ -97,7 +97,6 @@ def generate_voice(text, path):
     print("❌ Voice failed, skipping audio", flush=True)
     return None
 
-
 # =========================
 # VIDEO CLIP
 # =========================
@@ -118,7 +117,6 @@ def create_fullscreen_clip(image_path, duration, index):
         height=VIDEO_SIZE[1]
     )
 
-    # 🎥 Motion
     if index % 4 == 0:
         clip = clip.resize(lambda t: 1 + 0.1 * (t / duration))
     elif index % 4 == 1:
@@ -133,16 +131,15 @@ def create_fullscreen_clip(image_path, duration, index):
 
     return clip
 
-
 # =========================
-# SUBTITLE (FONT 60 ✅)
+# SUBTITLE (UPDATED)
 # =========================
 def create_subtitle(text, duration):
     img = Image.new("RGBA", VIDEO_SIZE, (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 60)  # ✅ reduced
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)  # ✅ FONT 40
     except:
         font = ImageFont.load_default()
 
@@ -150,31 +147,31 @@ def create_subtitle(text, duration):
     lines, line = [], ""
 
     for w in words:
-        if len(line + w) < 20:
+        if len(line + w) < 22:
             line += w + " "
         else:
             lines.append(line.strip())
             line = w + " "
     lines.append(line.strip())
 
-    lines = lines[-2:]
-    y = VIDEO_SIZE[1] - 180
+    lines = lines[-3:]  # ✅ MAX 3 LINES
+
+    y = VIDEO_SIZE[1] - 220
 
     for i, l in enumerate(lines):
         bbox = draw.textbbox((0, 0), l, font=font)
         w = bbox[2] - bbox[0]
 
         draw.text(
-            ((VIDEO_SIZE[0] - w) // 2, y + i * 70),
+            ((VIDEO_SIZE[0] - w) // 2, y + i * 60),
             l,
             font=font,
             fill=(255, 255, 0),
-            stroke_width=4,
+            stroke_width=3,
             stroke_fill=(0, 0, 0)
         )
 
     return ImageClip(np.array(img)).set_duration(duration)
-
 
 # =========================
 # SCENE
@@ -218,7 +215,6 @@ def create_scene(scene, index):
         print(f"❌ Scene {index} failed:", e, flush=True)
         return None
 
-
 # =========================
 # BUILD VIDEO
 # =========================
@@ -244,9 +240,8 @@ def build_video(scenes):
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        threads=2   # ⚡ faster
+        threads=2
     )
-
 
 # =========================
 # RUN
