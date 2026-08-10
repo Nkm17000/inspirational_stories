@@ -3,5 +3,9 @@ pillow==9.5.0
 numpy
 requests
 edge-tts
-nest_asyncio
-imageio[ffmpeg]
+nest-asyncio
+imageio
+imageio-ffmpeg
+proglog
+tqdm
+decorator
