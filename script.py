@@ -72,7 +72,7 @@ def get_topic():
     return title
 
 # =========================
-# STORY
+# STORY (FIXED + RETRY)
 # =========================
 def get_story():
     topic = get_topic()
@@ -82,36 +82,58 @@ Use this topic: "{topic}"
 {build_prompt}
 """
 
-    print("🧠 Generating story...", flush=True)
+    for attempt in range(3):
+        try:
+            print(f"🧠 Generating story (attempt {attempt+1})...", flush=True)
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": "You are a viral short video storyteller."},
-            {"role": "user", "content": full_prompt}
-        ],
-        temperature=0.9
-    )
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You are a viral short video storyteller."},
+                    {"role": "user", "content": full_prompt}
+                ],
+                temperature=0.8
+            )
 
-    output = response.choices[0].message.content
+            output = response.choices[0].message.content
+            print("📦 RAW OUTPUT:\n", output[:500], flush=True)
 
-    try:
-        match = re.search(r'\{.*\}', output, re.DOTALL)
-        clean = match.group(0) if match else output
-        data = json.loads(clean)
-        return data["scenes"]
-    except Exception as e:
-        print("❌ JSON parsing failed:", e)
-        raise
+            if not output or len(output.strip()) == 0:
+                raise ValueError("Empty response")
+
+            match = re.search(r'\{.*\}', output, re.DOTALL)
+            if not match:
+                raise ValueError("No JSON found")
+
+            clean = match.group(0)
+            data = json.loads(clean)
+
+            if "scenes" not in data:
+                raise ValueError("Missing scenes key")
+
+            return data["scenes"]
+
+        except Exception as e:
+            print("⚠️ Retry LLM:", e, flush=True)
+            time.sleep(2)
+
+    print("❌ LLM failed → fallback story", flush=True)
+
+    return [
+        {"text": "A hidden story begins...", "image_prompt": "dark village mystery cinematic"},
+        {"text": "Something unexpected happens...", "image_prompt": "shock dramatic scene"},
+        {"text": "Truth slowly reveals...", "image_prompt": "reveal suspense cinematic"},
+        {"text": "Everything changes forever...", "image_prompt": "emotional ending cinematic"}
+    ]
 
 # =========================
-# IMAGE (FINAL)
+# IMAGE (MULTI FALLBACK)
 # =========================
 def generate_image(prompt, path, fallback_text=None):
 
+    # 1️⃣ Pollinations
     url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
 
-    # 1️⃣ Pollinations
     for i in range(3):
         try:
             print(f"🖼️ Pollinations attempt {i+1}", flush=True)
@@ -125,12 +147,26 @@ def generate_image(prompt, path, fallback_text=None):
 
         except Exception as e:
             print("⚠️ Pollinations retry:", e, flush=True)
-            time.sleep(2)
 
-    print("❌ Pollinations failed → DummyImage", flush=True)
-
-    # 2️⃣ DummyImage
+    # 2️⃣ Picsum (no key)
     try:
+        print("🖼️ Picsum fallback", flush=True)
+
+        picsum_url = f"https://picsum.photos/720/1280?random={int(time.time())}"
+        r = requests.get(picsum_url, timeout=15)
+
+        if r.status_code == 200:
+            with open(path, "wb") as f:
+                f.write(r.content)
+            return path
+
+    except Exception as e:
+        print("⚠️ Picsum failed:", e, flush=True)
+
+    # 3️⃣ DummyImage
+    try:
+        print("🖼️ Dummy fallback", flush=True)
+
         text = fallback_text or "Scene"
         dummy_url = f"https://dummyimage.com/720x1280/000/fff&text={urllib.parse.quote(text[:80])}"
 
@@ -141,11 +177,11 @@ def generate_image(prompt, path, fallback_text=None):
             return path
 
     except Exception as e:
-        print("⚠️ DummyImage failed:", e, flush=True)
+        print("⚠️ Dummy failed:", e, flush=True)
 
-    print("❌ Dummy failed → Local fallback", flush=True)
+    # 4️⃣ Local fallback
+    print("🖼️ Local fallback", flush=True)
 
-    # 3️⃣ Local fallback
     try:
         img = Image.new("RGB", VIDEO_SIZE, (20, 20, 20))
         draw = ImageDraw.Draw(img)
@@ -169,7 +205,6 @@ def generate_image(prompt, path, fallback_text=None):
         lines.append(line.strip())
 
         lines = lines[:4]
-
         y = VIDEO_SIZE[1] // 2 - 100
 
         for i, l in enumerate(lines):
@@ -239,7 +274,6 @@ def create_subtitle(text, duration):
     lines.append(line.strip())
 
     lines = lines[-3:]
-
     y = VIDEO_SIZE[1] - 220
 
     for i, l in enumerate(lines):
@@ -345,5 +379,6 @@ def build_video(scenes):
 # RUN
 # =========================
 scenes = get_story()
-print(scenes)
+print("✅ Scenes generated:", len(scenes), flush=True)
+
 build_video(scenes)
