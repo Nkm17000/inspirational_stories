@@ -9,3 +9,4 @@ imageio-ffmpeg
 proglog
 tqdm
 decorator
+groq
