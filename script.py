@@ -71,6 +71,7 @@ print(scenes)
 def generate_image(prompt, path):
     url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
 
+    time.sleep(5)
     for i in range(3):
         try:
             print(f"🖼️ Image attempt {i+1}", flush=True)
