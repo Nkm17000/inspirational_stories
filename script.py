@@ -62,6 +62,7 @@ os.makedirs("audio", exist_ok=True)
 # =========================
 
 scenes = get_story()
+print(scenes)
 
 # =========================
 # IMAGE
