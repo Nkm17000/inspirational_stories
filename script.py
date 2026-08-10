@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 from moviepy.audio.AudioClip import AudioArrayClip
 
 # =========================
-# ✅ FIXES FOR CI
+# ✅ FIX FOR CI
 # =========================
 
 nest_asyncio.apply()
@@ -44,10 +44,9 @@ os.makedirs("audio", exist_ok=True)
 # CHARACTERS
 # =========================
 
-CHARACTER = "Raju, a 10-year-old Indian village boy, short hair, wearing dusty simple clothes, same face, consistent character"
+CHARACTER = "Raju, a 10-year-old Indian village boy, short hair, wearing dusty simple clothes, same face"
 FATHER = "Raju's father, poor Indian farmer, thin, wearing dhoti and turban, same face"
-
-STYLE = "cinematic, realistic, 4k, emotional lighting, same character"
+STYLE = "cinematic, realistic, emotional lighting, 4k"
 
 # =========================
 # STORY
@@ -56,23 +55,15 @@ STYLE = "cinematic, realistic, 4k, emotional lighting, same character"
 scenes = [
     {"text": "You won’t believe what this son did...", "image_prompt": f"{CHARACTER}, {STYLE}"},
     {"text": "Raju lived in a small village with his father...", "image_prompt": f"{CHARACTER} with {FATHER} in village hut, {STYLE}"},
-    {"text": "His father worked day and night in the fields...", "image_prompt": f"{FATHER} working in hot sun, खेत, sweating मेहनत, {STYLE}"},
-    {"text": "But Raju never cared about his father's struggles...", "image_prompt": f"{CHARACTER} ignoring {FATHER}, sitting idle, {STYLE}"},
-    {"text": "He spent his time playing and wasting his days...", "image_prompt": f"{CHARACTER} playing while {FATHER} working in background, {STYLE}"},
-    {"text": "One day... his father fell seriously ill...", "image_prompt": f"{FATHER} sick lying on bed, {CHARACTER} shocked, emotional, {STYLE}"},
-    {"text": "For the first time... Raju felt fear and guilt...", "image_prompt": f"{CHARACTER} crying near {FATHER}, emotional close scene, {STYLE}"},
-    {"text": "He realized how much his father had sacrificed...", "image_prompt": f"{CHARACTER} remembering past मेहनत of {FATHER}, emotional flashback, {STYLE}"},
-    {"text": "The next morning... everything changed...", "image_prompt": f"{CHARACTER} waking early with determination, sunrise, {STYLE}"},
-    {"text": "Raju went to the fields and started working hard...", "image_prompt": f"{CHARACTER} working in farm like {FATHER}, मेहनत, {STYLE}"},
-    {"text": "Slowly... he took responsibility of the family...", "image_prompt": f"{CHARACTER} taking care of sick {FATHER}, emotional, {STYLE}"},
-    {"text": "Days passed... his father finally recovered...", "image_prompt": f"{FATHER} recovering and smiling at {CHARACTER}, {STYLE}"},
-    {"text": "Seeing his son change... his father felt proud...", "image_prompt": f"{FATHER} proud emotional look at {CHARACTER}, {STYLE}"},
-    {"text": "Together... they worked and rebuilt their life...", "image_prompt": f"{CHARACTER} and {FATHER} farming together happily, sunset, {STYLE}"},
-    {"text": "And Raju never ignored his father again...", "image_prompt": f"{CHARACTER} respecting {FATHER}, emotional happy ending, {STYLE}"}
+    {"text": "His father worked day and night in the fields...", "image_prompt": f"{FATHER} working in hot sun, खेत, मेहनत, {STYLE}"},
+    {"text": "But Raju never cared about his father's struggles...", "image_prompt": f"{CHARACTER} ignoring {FATHER}, {STYLE}"},
+    {"text": "One day... his father fell seriously ill...", "image_prompt": f"{FATHER} sick, {CHARACTER} emotional, {STYLE}"},
+    {"text": "Raju realized his mistake and changed...", "image_prompt": f"{CHARACTER} working hard in fields, {STYLE}"},
+    {"text": "His father recovered and felt proud...", "image_prompt": f"{FATHER} smiling at {CHARACTER}, {STYLE}"}
 ]
 
 # =========================
-# IMAGE GENERATION
+# IMAGE
 # =========================
 
 def generate_image(prompt, path):
@@ -92,10 +83,10 @@ def generate_image(prompt, path):
             print("Retry:", e)
             time.sleep(2)
 
-    raise Exception("Image failed")
+    raise Exception("Image generation failed")
 
 # =========================
-# VOICE GENERATION
+# VOICE
 # =========================
 
 def generate_voice(text, path):
@@ -115,36 +106,26 @@ def generate_voice(text, path):
 # VIDEO CLIP
 # =========================
 
-def create_fullscreen_clip(image_path, duration, index):
+def create_clip(image_path, duration, index):
     clip = ImageClip(image_path)
 
     clip = clip.resize(height=VIDEO_SIZE[1])
-    if clip.w < VIDEO_SIZE[0]:
-        clip = clip.resize(width=VIDEO_SIZE[0])
+    clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2,
+                     width=VIDEO_SIZE[0], height=VIDEO_SIZE[1])
 
-    clip = clip.crop(
-        x_center=clip.w/2,
-        y_center=clip.h/2,
-        width=VIDEO_SIZE[0],
-        height=VIDEO_SIZE[1]
-    )
-
-    if index % 4 == 0:
-        clip = clip.resize(lambda t: 1 + 0.1*(t/duration))
-    elif index % 4 == 1:
-        clip = clip.set_position(lambda t: (-30*t, 'center'))
-    elif index % 4 == 2:
-        clip = clip.resize(lambda t: 1.1 - 0.1*(t/duration))
+    # Motion
+    if index % 2 == 0:
+        clip = clip.resize(lambda t: 1 + 0.05*(t/duration))
     else:
         clip = clip.set_position(lambda t: ('center', -20*t))
 
     clip = clip.set_duration(duration)
-    clip = fadein(clip, 0.8).fx(fadeout, 0.8)
+    clip = fadein(clip, 0.5).fx(fadeout, 0.5)
 
     return clip
 
 # =========================
-# SUBTITLES
+# SUBTITLE
 # =========================
 
 def create_subtitle(text, duration):
@@ -152,42 +133,23 @@ def create_subtitle(text, duration):
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 85)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 70)
     except:
         font = ImageFont.load_default()
 
-    words = text.split()
-    lines = []
-    line = ""
-
-    for w in words:
-        if len(line + w) < 18:
-            line += w + " "
-        else:
-            lines.append(line.strip())
-            line = w + " "
-    lines.append(line.strip())
-
-    lines = lines[-2:]
-    y = VIDEO_SIZE[1] - 180
-
-    for i, l in enumerate(lines):
-        bbox = draw.textbbox((0,0), l, font=font)
-        w = bbox[2] - bbox[0]
-
-        draw.text(
-            ((VIDEO_SIZE[0]-w)//2, y + i*90),
-            l,
-            font=font,
-            fill=(255,255,0),
-            stroke_width=6,
-            stroke_fill=(0,0,0)
-        )
+    draw.text(
+        (50, VIDEO_SIZE[1] - 200),
+        text,
+        font=font,
+        fill=(255,255,0),
+        stroke_width=4,
+        stroke_fill=(0,0,0)
+    )
 
     return ImageClip(np.array(img)).set_duration(duration)
 
 # =========================
-# SCENE CREATION
+# SCENE
 # =========================
 
 def create_scene(scene, index):
@@ -202,24 +164,15 @@ def create_scene(scene, index):
     img_path = f"images/s_{index}.png"
     generate_image(scene["image_prompt"], img_path)
 
-    base = create_fullscreen_clip(img_path, duration, index)
+    base = create_clip(img_path, duration, index)
     subtitle = create_subtitle(scene["text"], duration)
 
-    final = CompositeVideoClip(
+    video = CompositeVideoClip(
         [base, subtitle.set_position(("center", "bottom"))],
         size=VIDEO_SIZE
     )
 
-    if audio.duration < duration:
-        silence = AudioArrayClip(
-            np.zeros((int(44100*(duration-audio.duration)),2)),
-            fps=44100
-        )
-        audio = concatenate_audioclips([audio, silence])
-    else:
-        audio = audio.subclip(0, duration)
-
-    return final.set_audio(audio)
+    return video.set_audio(audio)
 
 # =========================
 # BUILD VIDEO
@@ -232,15 +185,11 @@ def build_video(scenes):
         clip = create_scene(s, i)
 
         if i > 0:
-            clip = clip.crossfadein(1.0)
+            clip = clip.crossfadein(0.5)
 
         clips.append(clip)
 
-    final = concatenate_videoclips(
-        clips,
-        method="compose",
-        padding=-1
-    )
+    final = concatenate_videoclips(clips, method="compose", padding=-0.5)
 
     final.write_videofile(
         "final_video.mp4",

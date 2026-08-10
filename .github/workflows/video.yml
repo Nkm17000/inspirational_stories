@@ -1,14 +1,59 @@
-name: Test Workflow
+name: Generate Video
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Print message
-        run: echo "Workflow is running ✅"
+      # ✅ Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ✅ Setup Python with caching
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: 'pip'
+
+      # ✅ Cache pip manually (extra speed)
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      # ✅ Install ffmpeg (required for moviepy)
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      # ✅ Install Python dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ✅ Debug step (optional but helpful)
+      - name: Debug files
+        run: ls -la
+
+      # ✅ Run your script
+      - name: Run Video Generator
+        run: python script.py
+
+      # ✅ Upload output video
+      - name: Upload video artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-video
+          path: final_video.mp4
