@@ -12,27 +12,29 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:   # ✅ FIX ADDED HERE
+    permissions:
+      contents: write   # ✅ required for push
+
+    env:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
     steps:
-      # ✅ Checkout code
+      # ✅ Checkout (FULL HISTORY REQUIRED)
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0   # ✅ IMPORTANT
 
-      # ✅ Setup Python with caching
+      # ✅ Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: 'pip'
 
-      # ❌ REMOVE THIS (duplicate cache)
-      # - name: Cache pip
-      #   uses: actions/cache@v4
-
       # ✅ Install ffmpeg
-      - name: Install system dependencies
+      - name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -40,11 +42,10 @@ jobs:
       # ✅ Install dependencies
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ✅ Debug secret (IMPORTANT)
-      - name: Debug Secret
+      # ✅ Validate secret
+      - name: Validate GROQ API Key
         run: |
           if [ -z "$GROQ_API_KEY" ]; then
             echo "❌ GROQ_API_KEY is EMPTY"
@@ -53,12 +54,24 @@ jobs:
             echo "✅ GROQ_API_KEY is set"
           fi
 
-      # ✅ Run script
+      # ✅ Run script (this updates counter.json)
       - name: Run Video Generator
         run: python script.py
 
+      # ✅ 🔥 COMMIT + PUSH COUNTER (CRITICAL FIX)
+      - name: Commit counter update
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+
+          git add counter.json
+
+          git diff --cached --quiet || git commit -m "🔁 update counter"
+
+          git push origin HEAD:main
+
       # ✅ Upload video
-      - name: Upload video artifact
+      - name: Upload video
         uses: actions/upload-artifact@v4
         with:
           name: generated-video

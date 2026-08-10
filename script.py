@@ -16,9 +16,27 @@ from moviepy.video.fx.all import fadein, fadeout
 from PIL import Image, ImageDraw, ImageFont
 from moviepy.audio.AudioClip import AudioArrayClip
 
-# ✅ Fix async issue
+# =========================
+# ✅ FIX ASYNC
+# =========================
 nest_asyncio.apply()
 
+# =========================
+# ✅ CONFIG
+# =========================
+VIDEO_SIZE = (720, 1280)
+FPS = 24
+MIN_DURATION = 5
+
+DATA_FILE = "indian_story_titles_1000.json"
+COUNTER_FILE = "counter.json"
+
+os.makedirs("images", exist_ok=True)
+os.makedirs("audio", exist_ok=True)
+
+# =========================
+# ✅ LOAD API KEY
+# =========================
 api_key = os.getenv("GROQ_API_KEY")
 
 if not api_key:
@@ -26,19 +44,61 @@ if not api_key:
 
 client = Groq(api_key=api_key)
 
+# =========================
+# ✅ COUNTER LOGIC
+# =========================
+def load_counter():
+    if not os.path.exists(COUNTER_FILE):
+        return 0
+    with open(COUNTER_FILE) as f:
+        return json.load(f).get("counter", 0)
 
+def save_counter(value):
+    with open(COUNTER_FILE, "w") as f:
+        json.dump({"counter": value}, f)
+
+def get_topic():
+    with open(DATA_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+
+    counter = load_counter()
+    topic_data = data[counter % len(data)]
+
+    title = topic_data.get("title", "")
+    story_id = topic_data.get("id", counter)
+
+    print(f"🎯 Topic: {title} (ID: {story_id})")
+
+    save_counter(counter + 1)
+
+    return title
+
+# =========================
+# ✅ GET STORY FROM GROQ
+# =========================
 def get_story():
+    topic = get_topic()
+
+    full_prompt = f"""
+Use this topic: "{topic}"
+
+{PROMPT}
+"""
+
     print("🧠 Generating story from Groq...", flush=True)
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": PROMPT}],
+        messages=[
+            {"role": "system", "content": "You are a viral short video storyteller."},
+            {"role": "user", "content": full_prompt}
+        ],
         temperature=0.9
     )
 
     output = response.choices[0].message.content
 
-    # 🔥 Extract JSON safely
+    # Extract JSON safely
     match = re.search(r'\{.*\}', output, re.DOTALL)
     clean = match.group(0) if match else output
 
@@ -47,31 +107,16 @@ def get_story():
     return data["scenes"]
 
 # =========================
-# CONFIG
+# 🎬 LOAD STORY
 # =========================
-
-VIDEO_SIZE = (720, 1280)
-FPS = 24
-MIN_DURATION = 5
-
-os.makedirs("images", exist_ok=True)
-os.makedirs("audio", exist_ok=True)
-
-# =========================
-# 🎬 LOAD STORY FROM GROQ
-# =========================
-
 scenes = get_story()
-print(scenes)
 
 # =========================
 # IMAGE
 # =========================
-
 def generate_image(prompt, path):
     url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
 
-    time.sleep(5)
     for i in range(3):
         try:
             print(f"🖼️ Image attempt {i+1}", flush=True)
@@ -82,16 +127,17 @@ def generate_image(prompt, path):
                 with open(path, "wb") as f:
                     f.write(r.content)
                 return path
+
         except Exception as e:
-            print("⚠️ Image retry:", e, flush=True)
+            print("⚠️ Image retry:", e)
 
     return None
 
 # =========================
 # VOICE
 # =========================
-
 def generate_voice(text, path):
+
     async def tts():
         communicate = edge_tts.Communicate(
             text=text,
@@ -106,14 +152,13 @@ def generate_voice(text, path):
             asyncio.run(tts())
             return path
         except Exception as e:
-            print("⚠️ Voice retry:", e, flush=True)
+            print("⚠️ Voice retry:", e)
 
     return None
 
 # =========================
 # VIDEO CLIP
 # =========================
-
 def create_fullscreen_clip(image_path, duration, index):
     if image_path is None:
         return ColorClip(VIDEO_SIZE, color=(0, 0, 0)).set_duration(duration)
@@ -146,9 +191,8 @@ def create_fullscreen_clip(image_path, duration, index):
     return clip
 
 # =========================
-# SUBTITLE (FIXED)
+# SUBTITLE
 # =========================
-
 def create_subtitle(text, duration):
     img = Image.new("RGBA", VIDEO_SIZE, (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -170,7 +214,6 @@ def create_subtitle(text, duration):
     lines.append(line.strip())
 
     lines = lines[-3:]
-
     y = VIDEO_SIZE[1] - 220
 
     for i, l in enumerate(lines):
@@ -191,7 +234,6 @@ def create_subtitle(text, duration):
 # =========================
 # SCENE
 # =========================
-
 def create_scene(scene, index):
     print(f"\n🎬 Scene {index}", flush=True)
 
@@ -229,7 +271,6 @@ def create_scene(scene, index):
 # =========================
 # BUILD VIDEO
 # =========================
-
 def build_video(scenes):
     clips = []
 
@@ -258,5 +299,4 @@ def build_video(scenes):
 # =========================
 # RUN
 # =========================
-
 build_video(scenes)
