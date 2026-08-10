@@ -12,6 +12,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:   # ✅ FIX ADDED HERE
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
     steps:
       # ✅ Checkout code
       - name: Checkout code
@@ -24,34 +27,37 @@ jobs:
           python-version: "3.10"
           cache: 'pip'
 
-      # ✅ Cache pip manually (extra speed)
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      # ❌ REMOVE THIS (duplicate cache)
+      # - name: Cache pip
+      #   uses: actions/cache@v4
 
-      # ✅ Install ffmpeg (required for moviepy)
+      # ✅ Install ffmpeg
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      # ✅ Install Python dependencies
+      # ✅ Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ✅ Debug step (optional but helpful)
-      - name: Debug files
-        run: ls -la
+      # ✅ Debug secret (IMPORTANT)
+      - name: Debug Secret
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "❌ GROQ_API_KEY is EMPTY"
+            exit 1
+          else
+            echo "✅ GROQ_API_KEY is set"
+          fi
 
-      # ✅ Run your script
+      # ✅ Run script
       - name: Run Video Generator
         run: python script.py
 
-      # ✅ Upload output video
+      # ✅ Upload video
       - name: Upload video artifact
         uses: actions/upload-artifact@v4
         with:
