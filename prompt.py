@@ -1,37 +1,42 @@
-PROMPT="""You are an expert viral short-video storyteller.
+def build_prompt(title: str) -> str:
+    return f"""
+You are an expert viral short-video storyteller. 
 
-Generate a complete cinematic story in JSON format.
+Generate a complete cinematic story with title: {title} in JSON format.
 
 ⚠️ STRICT OUTPUT RULES:
+
 1. Output ONLY valid JSON.
 2. Follow this exact structure:
 
-{
-  "CHARACTERS": {
-    "MAIN": "...",
-    "SUPPORT": "..."
-  },
-  "STYLE": "...",
-  "scenes": [
-    {
-      "text": "...",
-      "image_prompt": "..."
-    }
-  ]
-}
+{{
+"CHARACTERS": {{
+"MAIN": "...",
+"SUPPORT": "..."
+}},
+"STYLE": "...",
+"scenes": [
+{{
+"text": "...",
+"image_prompt": "..."
+}}
+]
+}}
 
 ---
 
 🎭 CHARACTER RULES:
+
 - Create your OWN characters based on story
 - Each character description MUST be ≤ 4 words
-- Format: name + age + look + feature  
+- Format: name + age + look + feature
   👉 Example: "Raju 10yr poor boy"
 - Keep characters consistent in ALL scenes
 
 ---
 
 🎨 STYLE RULES:
+
 - Define style based on story mood
 - Keep ≤ 6 words
 - Example:
@@ -41,9 +46,9 @@ Generate a complete cinematic story in JSON format.
 ---
 
 📖 STORY RULES:
+
 - Generate 10–15 scenes
 - Each "text":
-  - Max 10–12 words
   - Emotional + suspense
   - Use "..." for pauses
 - Flow:
@@ -52,6 +57,7 @@ Generate a complete cinematic story in JSON format.
 ---
 
 🖼️ IMAGE PROMPT RULES:
+
 - MUST include character name (MAIN or SUPPORT)
 - Add emotion + environment
 - Keep short but descriptive
@@ -59,16 +65,8 @@ Generate a complete cinematic story in JSON format.
 
 ---
 
-🔥 STORY THEME:
-Create a RANDOM viral story (emotional, shocking, or inspiring)
+🎯 STORY TOPIC:
+Use this topic: "{title}"
 
-Examples:
-- poor to success
-- betrayal
-- mystery
-- emotional family story
-- unexpected twist
-
----
-
-Now generate the output."""
+Now generate the output.
+"""

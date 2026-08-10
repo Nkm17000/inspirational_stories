@@ -10,19 +10,19 @@ import json
 import re
 
 from groq import Groq
-from prompt import PROMPT
+from prompt import build_prompt
 from moviepy.editor import *
 from moviepy.video.fx.all import fadein, fadeout
 from PIL import Image, ImageDraw, ImageFont
 from moviepy.audio.AudioClip import AudioArrayClip
 
 # =========================
-# ✅ FIX ASYNC
+# FIX ASYNC
 # =========================
 nest_asyncio.apply()
 
 # =========================
-# ✅ CONFIG
+# CONFIG
 # =========================
 VIDEO_SIZE = (720, 1280)
 FPS = 24
@@ -35,17 +35,16 @@ os.makedirs("images", exist_ok=True)
 os.makedirs("audio", exist_ok=True)
 
 # =========================
-# ✅ LOAD API KEY
+# API KEY
 # =========================
 api_key = os.getenv("GROQ_API_KEY")
-
 if not api_key:
     raise ValueError("❌ GROQ_API_KEY not set")
 
 client = Groq(api_key=api_key)
 
 # =========================
-# ✅ COUNTER LOGIC
+# COUNTER
 # =========================
 def load_counter():
     if not os.path.exists(COUNTER_FILE):
@@ -67,25 +66,23 @@ def get_topic():
     title = topic_data.get("title", "")
     story_id = topic_data.get("id", counter)
 
-    print(f"🎯 Topic: {title} (ID: {story_id})")
+    print(f"🎯 Topic: {title} (ID: {story_id})", flush=True)
 
     save_counter(counter + 1)
-
     return title
 
 # =========================
-# ✅ GET STORY FROM GROQ
+# STORY
 # =========================
 def get_story():
     topic = get_topic()
 
     full_prompt = f"""
 Use this topic: "{topic}"
-
-{PROMPT}
+{build_prompt}
 """
 
-    print("🧠 Generating story from Groq...", flush=True)
+    print("🧠 Generating story...", flush=True)
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -98,28 +95,26 @@ Use this topic: "{topic}"
 
     output = response.choices[0].message.content
 
-    # Extract JSON safely
-    match = re.search(r'\{.*\}', output, re.DOTALL)
-    clean = match.group(0) if match else output
-
-    data = json.loads(clean)
-
-    return data["scenes"]
-
-# =========================
-# 🎬 LOAD STORY
-# =========================
-scenes = get_story()
+    try:
+        match = re.search(r'\{.*\}', output, re.DOTALL)
+        clean = match.group(0) if match else output
+        data = json.loads(clean)
+        return data["scenes"]
+    except Exception as e:
+        print("❌ JSON parsing failed:", e)
+        raise
 
 # =========================
-# IMAGE
+# IMAGE (FINAL)
 # =========================
-def generate_image(prompt, path):
+def generate_image(prompt, path, fallback_text=None):
+
     url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
 
+    # 1️⃣ Pollinations
     for i in range(3):
         try:
-            print(f"🖼️ Image attempt {i+1}", flush=True)
+            print(f"🖼️ Pollinations attempt {i+1}", flush=True)
             time.sleep(5)
 
             r = requests.get(url, timeout=20)
@@ -129,9 +124,71 @@ def generate_image(prompt, path):
                 return path
 
         except Exception as e:
-            print("⚠️ Image retry:", e)
+            print("⚠️ Pollinations retry:", e, flush=True)
+            time.sleep(2)
 
-    return None
+    print("❌ Pollinations failed → DummyImage", flush=True)
+
+    # 2️⃣ DummyImage
+    try:
+        text = fallback_text or "Scene"
+        dummy_url = f"https://dummyimage.com/720x1280/000/fff&text={urllib.parse.quote(text[:80])}"
+
+        r = requests.get(dummy_url, timeout=10)
+        if r.status_code == 200:
+            with open(path, "wb") as f:
+                f.write(r.content)
+            return path
+
+    except Exception as e:
+        print("⚠️ DummyImage failed:", e, flush=True)
+
+    print("❌ Dummy failed → Local fallback", flush=True)
+
+    # 3️⃣ Local fallback
+    try:
+        img = Image.new("RGB", VIDEO_SIZE, (20, 20, 20))
+        draw = ImageDraw.Draw(img)
+
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 45)
+        except:
+            font = ImageFont.load_default()
+
+        text = fallback_text or "Scene"
+
+        words = text.split()
+        lines, line = [], ""
+
+        for w in words:
+            if len(line + w) < 20:
+                line += w + " "
+            else:
+                lines.append(line.strip())
+                line = w + " "
+        lines.append(line.strip())
+
+        lines = lines[:4]
+
+        y = VIDEO_SIZE[1] // 2 - 100
+
+        for i, l in enumerate(lines):
+            bbox = draw.textbbox((0, 0), l, font=font)
+            w = bbox[2] - bbox[0]
+
+            draw.text(
+                ((VIDEO_SIZE[0] - w) // 2, y + i * 60),
+                l,
+                font=font,
+                fill=(255, 255, 255)
+            )
+
+        img.save(path)
+        return path
+
+    except Exception as e:
+        print("❌ Final fallback failed:", e, flush=True)
+        return None
 
 # =========================
 # VOICE
@@ -152,43 +209,11 @@ def generate_voice(text, path):
             asyncio.run(tts())
             return path
         except Exception as e:
-            print("⚠️ Voice retry:", e)
+            print("⚠️ Voice retry:", e, flush=True)
+            time.sleep(2)
 
+    print("❌ Voice failed", flush=True)
     return None
-
-# =========================
-# VIDEO CLIP
-# =========================
-def create_fullscreen_clip(image_path, duration, index):
-    if image_path is None:
-        return ColorClip(VIDEO_SIZE, color=(0, 0, 0)).set_duration(duration)
-
-    clip = ImageClip(image_path)
-
-    clip = clip.resize(height=VIDEO_SIZE[1])
-    if clip.w < VIDEO_SIZE[0]:
-        clip = clip.resize(width=VIDEO_SIZE[0])
-
-    clip = clip.crop(
-        x_center=clip.w / 2,
-        y_center=clip.h / 2,
-        width=VIDEO_SIZE[0],
-        height=VIDEO_SIZE[1]
-    )
-
-    if index % 4 == 0:
-        clip = clip.resize(lambda t: 1 + 0.1 * (t / duration))
-    elif index % 4 == 1:
-        clip = clip.set_position(lambda t: (-30 * t, 'center'))
-    elif index % 4 == 2:
-        clip = clip.resize(lambda t: 1.1 - 0.1 * (t / duration))
-    else:
-        clip = clip.set_position(lambda t: ('center', -20 * t))
-
-    clip = clip.set_duration(duration)
-    clip = fadein(clip, 0.8).fx(fadeout, 0.8)
-
-    return clip
 
 # =========================
 # SUBTITLE
@@ -198,7 +223,7 @@ def create_subtitle(text, duration):
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 42)
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
     except:
         font = ImageFont.load_default()
 
@@ -214,6 +239,7 @@ def create_subtitle(text, duration):
     lines.append(line.strip())
 
     lines = lines[-3:]
+
     y = VIDEO_SIZE[1] - 220
 
     for i, l in enumerate(lines):
@@ -232,6 +258,29 @@ def create_subtitle(text, duration):
     return ImageClip(np.array(img)).set_duration(duration)
 
 # =========================
+# CLIP
+# =========================
+def create_fullscreen_clip(image_path, duration, index):
+    if image_path is None:
+        return ColorClip(VIDEO_SIZE, color=(0, 0, 0)).set_duration(duration)
+
+    clip = ImageClip(image_path)
+    clip = clip.resize(height=VIDEO_SIZE[1])
+
+    if clip.w < VIDEO_SIZE[0]:
+        clip = clip.resize(width=VIDEO_SIZE[0])
+
+    clip = clip.crop(
+        x_center=clip.w / 2,
+        y_center=clip.h / 2,
+        width=VIDEO_SIZE[0],
+        height=VIDEO_SIZE[1]
+    )
+
+    clip = clip.set_duration(duration)
+    return fadein(clip, 0.8).fx(fadeout, 0.8)
+
+# =========================
 # SCENE
 # =========================
 def create_scene(scene, index):
@@ -244,7 +293,7 @@ def create_scene(scene, index):
     duration = max(audio.duration if audio else 0, MIN_DURATION)
 
     img_path = f"images/s_{index}.png"
-    img = generate_image(scene["image_prompt"], img_path)
+    img = generate_image(scene["image_prompt"], img_path, scene["text"])
 
     base = create_fullscreen_clip(img, duration, index)
     subtitle = create_subtitle(scene["text"], duration)
@@ -282,11 +331,7 @@ def build_video(scenes):
 
         clips.append(clip)
 
-    final = concatenate_videoclips(
-        clips,
-        method="compose",
-        padding=-1
-    )
+    final = concatenate_videoclips(clips, method="compose", padding=-1)
 
     final.write_videofile(
         "final_video.mp4",
@@ -299,4 +344,6 @@ def build_video(scenes):
 # =========================
 # RUN
 # =========================
+scenes = get_story()
+print(scenes)
 build_video(scenes)
