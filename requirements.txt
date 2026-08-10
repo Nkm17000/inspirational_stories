@@ -1,0 +1,7 @@
+moviepy
+numpy
+requests
+pillow
+edge-tts
+nest_asyncio
+imageio[ffmpeg]
