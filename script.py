@@ -37,6 +37,8 @@ MONGODB_URI = os.getenv("MONGODB_URI")
 DATABASE_NAME = "storydb"
 COLLECTION_NAME = "story_scenes"
 
+# MongoDB scene schema: sub_image_prompts[{text, image_prompt}]
+
 # Optional:
 # Set STORY_ID when you want to process a specific story.
 #
@@ -214,55 +216,73 @@ def get_story_from_mongodb():
         for scene in scenes:
 
             text = scene.get("text")
-            image_prompts = scene.get("image_prompts")
+            sub_image_prompts = scene.get("sub_image_prompts")
 
             if not text:
-
                 print(
                     "⚠️ Scene skipped: missing text",
                     flush=True
                 )
-
                 continue
 
-            # New MongoDB schema uses image_prompts: [...]
-            if not isinstance(image_prompts, list) or not image_prompts:
-
+            # New MongoDB schema:
+            # sub_image_prompts: [
+            #   {
+            #     "text": "...",
+            #     "image_prompt": "..."
+            #   }
+            # ]
+            if not isinstance(sub_image_prompts, list) or not sub_image_prompts:
                 print(
-                    "⚠️ Scene skipped: missing image_prompts array",
+                    "⚠️ Scene skipped: missing sub_image_prompts array",
                     flush=True
                 )
-
                 continue
 
-            # Remove empty/non-string prompts while preserving order.
-            image_prompts = [
-                prompt.strip()
-                for prompt in image_prompts
-                if isinstance(prompt, str) and prompt.strip()
-            ]
+            valid_sub_prompts = []
 
-            if not image_prompts:
+            for sub_index, item in enumerate(sub_image_prompts, start=1):
 
+                if not isinstance(item, dict):
+                    print(
+                        f"⚠️ Scene {scene.get('scene_number', '?')}: "
+                        f"sub_image_prompts item {sub_index} is not an object",
+                        flush=True
+                    )
+                    continue
+
+                sub_text = item.get("text")
+                image_prompt = item.get("image_prompt")
+
+                if not image_prompt or not isinstance(image_prompt, str):
+                    print(
+                        f"⚠️ Scene {scene.get('scene_number', '?')}: "
+                        f"sub-image {sub_index} missing image_prompt",
+                        flush=True
+                    )
+                    continue
+
+                valid_sub_prompts.append({
+                    "text": sub_text.strip() if isinstance(sub_text, str) else "",
+                    "image_prompt": image_prompt.strip()
+                })
+
+            if not valid_sub_prompts:
                 print(
-                    "⚠️ Scene skipped: image_prompts array is empty",
+                    f"⚠️ Scene {scene.get('scene_number', '?')}: "
+                    f"no valid sub-image prompts",
                     flush=True
                 )
-
                 continue
 
             valid_scenes.append({
-
                 "scene_number": scene.get(
                     "scene_number",
                     len(valid_scenes) + 1
                 ),
-
                 "text": text,
-
-                "image_prompts": image_prompts
+                "sub_image_prompts": valid_sub_prompts
             })
-
 
         if not valid_scenes:
 
@@ -935,36 +955,68 @@ def create_scene(
     )
 
     # --------------------------------------------------------
-    # Text comes directly from MongoDB
+    # Main scene text comes directly from MongoDB.
+    #
+    # IMPORTANT:
+    # The main text is used for ONE voice track.
+    # sub_image_prompts only controls which images are shown.
     # --------------------------------------------------------
 
     text = scene["text"]
 
     # --------------------------------------------------------
-    # Image prompts come directly from MongoDB
+    # New MongoDB structure:
+    #
+    # "sub_image_prompts": [
+    #   {
+    #       "text": "...",
+    #       "image_prompt": "..."
+    #   },
+    #   ...
+    # ]
+    #
+    # We use image_prompt from every object.
+    # The sub-text is kept in MongoDB but the complete scene
+    # text remains the narration/voice for the scene.
     # --------------------------------------------------------
 
-    image_prompts = scene["image_prompts"]
+    sub_image_prompts = scene["sub_image_prompts"]
 
     print(
-        f"📝 Text: {text[:100]}...",
+        f"📝 Text: {text[:150]}...",
         flush=True
     )
 
     print(
-        f"🎨 Image prompts: {len(image_prompts)}",
+        f"🎨 Sub-image prompts: {len(sub_image_prompts)}",
         flush=True
     )
 
-    for prompt_index, prompt in enumerate(image_prompts, start=1):
+    for prompt_index, item in enumerate(
+        sub_image_prompts,
+        start=1
+    ):
+        sub_text = item.get("text", "")
+        image_prompt = item["image_prompt"]
+
         print(
-            f"   🖼️ Image {prompt_index}/{len(image_prompts)}: "
-            f"{prompt[:100]}...",
+            f"   🖼️ Image {prompt_index}/{len(sub_image_prompts)}",
+            flush=True
+        )
+
+        if sub_text:
+            print(
+                f"      📝 Sub-text: {sub_text[:100]}...",
+                flush=True
+            )
+
+        print(
+            f"      🎨 Prompt: {image_prompt[:120]}...",
             flush=True
         )
 
     # --------------------------------------------------------
-    # Generate voice
+    # Generate ONE voice for the complete scene text
     # --------------------------------------------------------
 
     audio_path = (
@@ -989,14 +1041,14 @@ def create_scene(
         MIN_DURATION
     )
 
+    print(
+        f"⏱️ Scene voice/video duration: {duration:.2f}s",
+        flush=True
+    )
+
     if word_timings:
         first_word = word_timings[0]
         last_word = word_timings[-1]
-
-        print(
-            f"⏱️ Audio duration: {duration:.2f}s",
-            flush=True
-        )
 
         print(
             f"⏱️ First word: "
@@ -1012,47 +1064,32 @@ def create_scene(
             flush=True
         )
 
-        print(
-            f"⏱️ Subtitle timing range: "
-            f"{first_word['start']:.3f}s → "
-            f"{min(last_word['end'], duration):.3f}s",
-            flush=True
-        )
-
     # --------------------------------------------------------
-    # Generate ALL images for this text
-    #
-    # The voice duration belongs to the complete text.
-    # If there are N image prompts, the duration is divided
-    # equally between the N images.
-    #
-    # Example:
-    #   Voice = 20 sec
-    #   2 prompts = 10 sec each
-    #
-    #   Voice = 30 sec
-    #   3 prompts = 10 sec each
+    # Generate all images
     # --------------------------------------------------------
 
     image_clips = []
-    image_count = len(image_prompts)
+    image_count = len(sub_image_prompts)
 
     print(
         f"🖼️ Total images for scene: {image_count}",
         flush=True
     )
 
-    for prompt_index, image_prompt in enumerate(
-        image_prompts,
+    for prompt_index, item in enumerate(
+        sub_image_prompts,
         start=1
     ):
+
+        image_prompt = item["image_prompt"]
 
         img_path = (
             f"images/s_{scene_number}_{prompt_index}.png"
         )
 
         print(
-            f"🖼️ Generating image {prompt_index}/{image_count}",
+            f"🖼️ Generating image "
+            f"{prompt_index}/{image_count}",
             flush=True
         )
 
@@ -1062,8 +1099,25 @@ def create_scene(
             text
         )
 
-        # Divide the complete voice duration equally
-        # across all images.
+        # ----------------------------------------------------
+        # Equal timing distribution
+        #
+        # Example:
+        # Scene voice = 20 sec
+        # 2 images
+        #
+        # Image 1 = 0 -> 10 sec
+        # Image 2 = 10 -> 20 sec
+        #
+        # Example:
+        # Scene voice = 30 sec
+        # 3 images
+        #
+        # Image 1 = 0 -> 10 sec
+        # Image 2 = 10 -> 20 sec
+        # Image 3 = 20 -> 30 sec
+        # ----------------------------------------------------
+
         start_time = (
             duration * (prompt_index - 1) / image_count
         )
@@ -1072,7 +1126,9 @@ def create_scene(
             duration * prompt_index / image_count
         )
 
-        image_duration = end_time - start_time
+        image_duration = (
+            end_time - start_time
+        )
 
         print(
             f"   ⏱️ Image {prompt_index}: "
@@ -1087,10 +1143,18 @@ def create_scene(
             prompt_index
         )
 
-        image_clips.append(image_clip)
+        image_clips.append(
+            image_clip
+        )
 
-    # Join image clips in the exact same order as image_prompts.
-    # Their total duration is exactly the scene duration.
+    # --------------------------------------------------------
+    # Join all images sequentially.
+    #
+    # No overlap.
+    # No black frame between images.
+    # Total image duration = complete voice duration.
+    # --------------------------------------------------------
+
     base = concatenate_videoclips(
         image_clips,
         method="compose",
@@ -1098,12 +1162,9 @@ def create_scene(
     )
 
     # --------------------------------------------------------
-    # Create subtitle
+    # Create subtitle for the complete scene text
     # --------------------------------------------------------
 
-    # Subtitle timing is based on the actual generated voice duration.
-    # If voice is shorter than MIN_DURATION, subtitles follow the voice
-    # and the remaining video time stays without subtitle.
     subtitle_duration = (
         audio.duration
         if audio
@@ -1124,7 +1185,7 @@ def create_scene(
     )
 
     # --------------------------------------------------------
-    # Add audio
+    # Add scene voice
     # --------------------------------------------------------
 
     if audio:
