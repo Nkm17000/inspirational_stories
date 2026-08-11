@@ -515,21 +515,23 @@ def generate_voice(
     path
 ):
     """
-    Generate voice and collect word-level timing from Edge-TTS.
+    Generate Edge-TTS audio and collect exact word-boundary timings.
 
     Returns:
         (audio_path, word_timings)
 
-    word_timings example:
-        {
-            "word": "Raju",
-            "start": 0.25,
-            "end": 0.60
-        }
+    word_timings:
+        [
+            {
+                "word": "Raju",
+                "start": 0.25,
+                "end": 0.60
+            },
+            ...
+        ]
     """
 
     async def tts():
-
         communicate = edge_tts.Communicate(
             text=text,
             voice="en-IN-NeerjaNeural",
@@ -542,33 +544,28 @@ def generate_voice(
         async for chunk in communicate.stream():
 
             if chunk["type"] == "audio":
-
-                audio_bytes.extend(
-                    chunk["data"]
-                )
+                audio_bytes.extend(chunk["data"])
 
             elif chunk["type"] == "WordBoundary":
-
-                offset = chunk.get("offset", 0)
-                word_duration = chunk.get("duration", 0)
                 word = chunk.get("text", "").strip()
 
                 if not word:
                     continue
 
-                # Edge-TTS uses 100-nanosecond units.
+                offset = chunk.get("offset", 0)
+                word_duration = chunk.get("duration", 0)
+
+                # Edge-TTS timing units are 100 nanoseconds.
                 start_seconds = offset / 10_000_000
                 end_seconds = (
                     offset + word_duration
                 ) / 10_000_000
 
-                word_timings.append(
-                    {
-                        "word": word,
-                        "start": start_seconds,
-                        "end": end_seconds
-                    }
-                )
+                word_timings.append({
+                    "word": word,
+                    "start": start_seconds,
+                    "end": end_seconds
+                })
 
         if not audio_bytes:
             raise RuntimeError(
@@ -580,29 +577,26 @@ def generate_voice(
 
         return word_timings
 
-    for i in range(3):
-
+    for attempt in range(3):
         try:
-
             print(
-                f"🎤 Voice attempt {i + 1}",
+                f"🎤 Voice attempt {attempt + 1}",
                 flush=True
             )
 
             timings = asyncio.run(tts())
 
             print(
-                f"✅ Voice generated: {len(timings)} word timings",
+                f"✅ Voice generated: "
+                f"{len(timings)} word timings",
                 flush=True
             )
 
             return path, timings
 
         except Exception as e:
-
             print(
-                "⚠️ Voice retry:",
-                e,
+                f"⚠️ Voice retry: {e}",
                 flush=True
             )
 
@@ -625,23 +619,41 @@ def create_subtitle(
     word_timings
 ):
     """
-    Create progressive subtitles synchronized with the voice.
+    TRUE PROGRESSIVE / RUNNING SUBTITLES.
 
-    The complete sentence is displayed progressively instead of
-    keeping only the last three lines.
+    The subtitle is updated at every spoken word boundary.
 
-    Each subtitle chunk contains a small number of words and is
-    timed using the WordBoundary timestamps returned by Edge-TTS.
+    Example:
+
+        Raju
+        Raju went
+        Raju went to
+        Raju went to the
+        Raju went to the fields
+
+    Once the window reaches 5 words, it rolls forward:
+
+        went to the fields and
+        to the fields and started
+        the fields and started working
+
+    This keeps the complete narration readable without showing
+    only the last few words.
     """
 
-    # --------------------------------------------------------
-    # FALLBACK: if Edge-TTS did not provide timings
-    # --------------------------------------------------------
+    FONT_SIZE = 40
+    MAX_CHARS_PER_LINE = 22
+    MAX_LINES = 3
+    MAX_VISIBLE_WORDS = 5
+
+    # ------------------------------------------------------------
+    # Fallback when Edge-TTS timings are unavailable
+    # ------------------------------------------------------------
 
     if not word_timings:
-
         print(
-            "⚠️ Word timings unavailable - using static subtitle",
+            "⚠️ Word timings unavailable - "
+            "using static subtitle",
             flush=True
         )
 
@@ -656,7 +668,7 @@ def create_subtitle(
         try:
             font = ImageFont.truetype(
                 "DejaVuSans-Bold.ttf",
-                40
+                FONT_SIZE
             )
         except:
             font = ImageFont.load_default()
@@ -666,29 +678,23 @@ def create_subtitle(
         line = ""
 
         for word in words:
+            candidate = f"{line} {word}".strip()
 
-            test_line = (
-                f"{line} {word}".strip()
-            )
-
-            if len(test_line) <= 22:
-                line = test_line
-
+            if len(candidate) <= MAX_CHARS_PER_LINE:
+                line = candidate
             else:
-
                 if line:
                     lines.append(line)
-
                 line = word
 
         if line:
             lines.append(line)
 
-        lines = lines[-3:]
+        lines = lines[-MAX_LINES:]
 
         y = VIDEO_SIZE[1] - 220
 
-        for i, line_text in enumerate(lines):
+        for line_index, line_text in enumerate(lines):
 
             bbox = draw.textbbox(
                 (0, 0),
@@ -701,7 +707,7 @@ def create_subtitle(
             draw.text(
                 (
                     (VIDEO_SIZE[0] - width) // 2,
-                    y + i * 60
+                    y + line_index * 60
                 ),
                 line_text,
                 font=font,
@@ -714,74 +720,85 @@ def create_subtitle(
             np.array(img)
         ).set_duration(duration)
 
-    # --------------------------------------------------------
-    # SETTINGS
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # Clean and normalize timings
+    # ------------------------------------------------------------
 
-    FONT_SIZE = 40
-    MAX_CHARS_PER_LINE = 22
-    MAX_LINES = 3
+    cleaned = []
 
-    # Number of words shown at a time.
-    # This gives a running-subtitle effect while remaining readable.
-    WORDS_PER_CHUNK = 5
+    for item in word_timings:
+
+        word = str(
+            item.get("word", "")
+        ).strip()
+
+        if not word:
+            continue
+
+        try:
+            start_time = float(
+                item.get("start", 0)
+            )
+
+            end_time = float(
+                item.get("end", start_time)
+            )
+
+        except (TypeError, ValueError):
+            continue
+
+        if end_time < start_time:
+            end_time = start_time
+
+        cleaned.append({
+            "word": word,
+            "start": max(0.0, start_time),
+            "end": max(
+                start_time,
+                end_time
+            )
+        })
+
+    if not cleaned:
+        return create_subtitle(
+            text,
+            duration,
+            []
+        )
+
+    # ------------------------------------------------------------
+    # Important:
+    # Edge-TTS timings are the source of truth.
+    #
+    # We create ONE subtitle state for every spoken word.
+    # Therefore the subtitle changes exactly when the next word
+    # starts speaking.
+    # ------------------------------------------------------------
 
     subtitle_clips = []
 
-    # --------------------------------------------------------
-    # Create timed chunks
-    # --------------------------------------------------------
+    for word_index in range(len(cleaned)):
 
-    chunks = []
-    current_chunk = []
+        current = cleaned[word_index]
 
-    for timing in word_timings:
+        start_time = current["start"]
 
-        current_chunk.append(timing)
+        # The subtitle state lasts until the next spoken word.
+        if word_index + 1 < len(cleaned):
+            next_start = cleaned[
+                word_index + 1
+            ]["start"]
 
-        word = timing["word"].strip()
-
-        # End a subtitle after a few words or punctuation.
-        punctuation_break = word.endswith(
-            (".", "!", "?", ";", ":")
-        )
-
-        if (
-            len(current_chunk) >= WORDS_PER_CHUNK
-            or punctuation_break
-        ):
-            chunks.append(current_chunk)
-            current_chunk = []
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    # --------------------------------------------------------
-    # Render each timed subtitle
-    # --------------------------------------------------------
-
-    for chunk_index, chunk in enumerate(chunks):
-
-        if not chunk:
-            continue
-
-        start_time = chunk[0]["start"]
-
-        # The next chunk starts exactly when the next group
-        # begins speaking.
-        if chunk_index + 1 < len(chunks):
-
-            end_time = (
-                chunks[chunk_index + 1][0]["start"]
-            )
+            end_time = next_start
 
         else:
-
+            # Last word remains visible until the actual
+            # audio/scene duration.
             end_time = duration
 
-        # Clamp timing to actual video duration.
+        # Clamp to actual scene duration.
         start_time = max(
-            0,
+            0.0,
             min(start_time, duration)
         )
 
@@ -793,32 +810,50 @@ def create_subtitle(
         if end_time <= start_time:
             continue
 
-        # ----------------------------------------------------
-        # Build subtitle text
-        # ----------------------------------------------------
+        # --------------------------------------------------------
+        # Rolling window.
+        #
+        # Before 5 words:
+        #   word 1
+        #   word 1 + word 2
+        #   ...
+        #
+        # After 5 words:
+        #   word 2 ... word 6
+        #   word 3 ... word 7
+        # --------------------------------------------------------
 
-        chunk_text = " ".join(
+        window_start = max(
+            0,
+            word_index - MAX_VISIBLE_WORDS + 1
+        )
+
+        visible_words = cleaned[
+            window_start:word_index + 1
+        ]
+
+        visible_text = " ".join(
             item["word"]
-            for item in chunk
-        ).strip()
+            for item in visible_words
+        )
 
-        words = chunk_text.split()
+        # --------------------------------------------------------
+        # Wrap visible words into up to 3 lines.
+        # --------------------------------------------------------
 
         lines = []
         line = ""
 
-        for word in words:
+        for word in visible_text.split():
 
-            test_line = (
+            candidate = (
                 f"{line} {word}".strip()
             )
 
-            if len(test_line) <= MAX_CHARS_PER_LINE:
-
-                line = test_line
+            if len(candidate) <= MAX_CHARS_PER_LINE:
+                line = candidate
 
             else:
-
                 if line:
                     lines.append(line)
 
@@ -827,12 +862,13 @@ def create_subtitle(
         if line:
             lines.append(line)
 
-        # Maximum 3 lines.
-        lines = lines[:MAX_LINES]
+        # Safety: maximum 3 lines.
+        # Keep the newest content if wrapping produces >3 lines.
+        lines = lines[-MAX_LINES:]
 
-        # ----------------------------------------------------
-        # Create transparent subtitle image
-        # ----------------------------------------------------
+        # --------------------------------------------------------
+        # Render subtitle frame
+        # --------------------------------------------------------
 
         img = Image.new(
             "RGBA",
@@ -843,17 +879,22 @@ def create_subtitle(
         draw = ImageDraw.Draw(img)
 
         try:
-
             font = ImageFont.truetype(
                 "DejaVuSans-Bold.ttf",
                 FONT_SIZE
             )
-
         except:
-
             font = ImageFont.load_default()
 
-        y = VIDEO_SIZE[1] - 220
+        # Calculate block height dynamically.
+        line_height = 60
+        block_height = len(lines) * line_height
+
+        y = (
+            VIDEO_SIZE[1]
+            - 180
+            - block_height
+        )
 
         for line_index, line_text in enumerate(lines):
 
@@ -863,15 +904,12 @@ def create_subtitle(
                 font=font
             )
 
-            width = (
-                bbox[2]
-                - bbox[0]
-            )
+            width = bbox[2] - bbox[0]
 
             draw.text(
                 (
                     (VIDEO_SIZE[0] - width) // 2,
-                    y + line_index * 60
+                    y + line_index * line_height
                 ),
                 line_text,
                 font=font,
@@ -886,21 +924,13 @@ def create_subtitle(
             .set_duration(
                 end_time - start_time
             )
-            .set_position(
-                ("center", "bottom")
-            )
         )
 
         subtitle_clips.append(
             subtitle_clip
         )
 
-    # --------------------------------------------------------
-    # Final subtitle composition
-    # --------------------------------------------------------
-
     if not subtitle_clips:
-
         return ImageClip(
             np.zeros(
                 (
@@ -1035,6 +1065,36 @@ def create_scene(
         MIN_DURATION
     )
 
+    if word_timings:
+        first_word = word_timings[0]
+        last_word = word_timings[-1]
+
+        print(
+            f"⏱️ Audio duration: {duration:.2f}s",
+            flush=True
+        )
+
+        print(
+            f"⏱️ First word: "
+            f"{first_word['word']} "
+            f"@ {first_word['start']:.3f}s",
+            flush=True
+        )
+
+        print(
+            f"⏱️ Last word: "
+            f"{last_word['word']} "
+            f"@ {last_word['start']:.3f}s",
+            flush=True
+        )
+
+        print(
+            f"⏱️ Subtitle timing range: "
+            f"{first_word['start']:.3f}s → "
+            f"{min(last_word['end'], duration):.3f}s",
+            flush=True
+        )
+
     # --------------------------------------------------------
     # Generate image
     # --------------------------------------------------------
@@ -1072,9 +1132,7 @@ def create_scene(
     final = CompositeVideoClip(
         [
             base,
-            subtitle.set_position(
-                ("center", "bottom")
-            )
+            subtitle
         ],
         size=VIDEO_SIZE
     )
@@ -1155,10 +1213,13 @@ def build_video(
             "❌ No video clips generated"
         )
 
+    # Keep scene audio/subtitle timelines aligned.
+    # Do not overlap complete scenes because that can overlap
+    # audio while subtitles remain on their own scene timeline.
     final = concatenate_videoclips(
         clips,
         method="compose",
-        padding=-1
+        padding=0
     )
 
     final.write_videofile(
