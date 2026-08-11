@@ -214,7 +214,7 @@ def get_story_from_mongodb():
         for scene in scenes:
 
             text = scene.get("text")
-            image_prompt = scene.get("image_prompt")
+            image_prompts = scene.get("image_prompts")
 
             if not text:
 
@@ -225,10 +225,27 @@ def get_story_from_mongodb():
 
                 continue
 
-            if not image_prompt:
+            # New MongoDB schema uses image_prompts: [...]
+            if not isinstance(image_prompts, list) or not image_prompts:
 
                 print(
-                    "⚠️ Scene skipped: missing image_prompt",
+                    "⚠️ Scene skipped: missing image_prompts array",
+                    flush=True
+                )
+
+                continue
+
+            # Remove empty/non-string prompts while preserving order.
+            image_prompts = [
+                prompt.strip()
+                for prompt in image_prompts
+                if isinstance(prompt, str) and prompt.strip()
+            ]
+
+            if not image_prompts:
+
+                print(
+                    "⚠️ Scene skipped: image_prompts array is empty",
                     flush=True
                 )
 
@@ -243,8 +260,9 @@ def get_story_from_mongodb():
 
                 "text": text,
 
-                "image_prompt": image_prompt
+                "image_prompts": image_prompts
             })
+
 
         if not valid_scenes:
 
@@ -892,13 +910,9 @@ def create_fullscreen_clip(
         duration
     )
 
-    return fadein(
-        clip,
-        0.8
-    ).fx(
-        fadeout,
-        0.8
-    )
+    # Do not fade each sub-image to black. The image should
+    # remain visible for its complete allocated duration.
+    return clip
 
 
 # ============================================================
@@ -927,10 +941,10 @@ def create_scene(
     text = scene["text"]
 
     # --------------------------------------------------------
-    # Image prompt comes directly from MongoDB
+    # Image prompts come directly from MongoDB
     # --------------------------------------------------------
 
-    image_prompt = scene["image_prompt"]
+    image_prompts = scene["image_prompts"]
 
     print(
         f"📝 Text: {text[:100]}...",
@@ -938,9 +952,16 @@ def create_scene(
     )
 
     print(
-        f"🎨 Image prompt: {image_prompt[:100]}...",
+        f"🎨 Image prompts: {len(image_prompts)}",
         flush=True
     )
+
+    for prompt_index, prompt in enumerate(image_prompts, start=1):
+        print(
+            f"   🖼️ Image {prompt_index}/{len(image_prompts)}: "
+            f"{prompt[:100]}...",
+            flush=True
+        )
 
     # --------------------------------------------------------
     # Generate voice
@@ -999,27 +1020,81 @@ def create_scene(
         )
 
     # --------------------------------------------------------
-    # Generate image
+    # Generate ALL images for this text
+    #
+    # The voice duration belongs to the complete text.
+    # If there are N image prompts, the duration is divided
+    # equally between the N images.
+    #
+    # Example:
+    #   Voice = 20 sec
+    #   2 prompts = 10 sec each
+    #
+    #   Voice = 30 sec
+    #   3 prompts = 10 sec each
     # --------------------------------------------------------
 
-    img_path = (
-        f"images/s_{index + 1}.png"
+    image_clips = []
+    image_count = len(image_prompts)
+
+    print(
+        f"🖼️ Total images for scene: {image_count}",
+        flush=True
     )
 
-    img = generate_image(
-        image_prompt,
-        img_path,
-        text
-    )
+    for prompt_index, image_prompt in enumerate(
+        image_prompts,
+        start=1
+    ):
 
-    # --------------------------------------------------------
-    # Create image clip
-    # --------------------------------------------------------
+        img_path = (
+            f"images/s_{scene_number}_{prompt_index}.png"
+        )
 
-    base = create_fullscreen_clip(
-        img,
-        duration,
-        index
+        print(
+            f"🖼️ Generating image {prompt_index}/{image_count}",
+            flush=True
+        )
+
+        img = generate_image(
+            image_prompt,
+            img_path,
+            text
+        )
+
+        # Divide the complete voice duration equally
+        # across all images.
+        start_time = (
+            duration * (prompt_index - 1) / image_count
+        )
+
+        end_time = (
+            duration * prompt_index / image_count
+        )
+
+        image_duration = end_time - start_time
+
+        print(
+            f"   ⏱️ Image {prompt_index}: "
+            f"{start_time:.2f}s -> {end_time:.2f}s "
+            f"({image_duration:.2f}s)",
+            flush=True
+        )
+
+        image_clip = create_fullscreen_clip(
+            img,
+            image_duration,
+            prompt_index
+        )
+
+        image_clips.append(image_clip)
+
+    # Join image clips in the exact same order as image_prompts.
+    # Their total duration is exactly the scene duration.
+    base = concatenate_videoclips(
+        image_clips,
+        method="compose",
+        padding=0
     )
 
     # --------------------------------------------------------
