@@ -54,6 +54,10 @@ LOGO_MARGIN = int(os.getenv("LOGO_MARGIN", "18"))
 CTA_URL = "https://www.facebook.com/thesmartlearninglab"
 END_CARD_DURATION = float(os.getenv("END_CARD_DURATION", "5"))
 
+# Opening title page.
+# The title is read directly from the MongoDB story document.
+TITLE_CARD_DURATION = float(os.getenv("TITLE_CARD_DURATION", "4"))
+
 # MongoDB
 MONGODB_URI = os.getenv("MONGODB_URI")
 
@@ -1911,14 +1915,323 @@ def create_end_card(duration=END_CARD_DURATION):
 
 
 # ============================================================
+# OPENING TITLE PAGE
+# ============================================================
+
+def wrap_title_text(text, font, max_width, draw):
+    """
+    Wrap the MongoDB story title so it fits cleanly on the 720x1280
+    vertical title card.
+    """
+    words = str(text or "Untitled Story").split()
+
+    if not words:
+        return ["Untitled Story"]
+
+    lines = []
+    current = ""
+
+    for word in words:
+        candidate = f"{current} {word}".strip()
+
+        bbox = draw.textbbox(
+            (0, 0),
+            candidate,
+            font=font
+        )
+
+        width = bbox[2] - bbox[0]
+
+        if width <= max_width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+
+            current = word
+
+    if current:
+        lines.append(current)
+
+    return lines
+
+
+def create_title_card(title, duration=TITLE_CARD_DURATION):
+    """
+    Create the opening title page using the story title stored in MongoDB.
+
+    The title page:
+      - appears before the first story scene
+      - uses the same 720x1280 video size
+      - supports Hindi/Devanagari and English titles
+      - uses the existing logo when available
+      - has no narration/audio
+    """
+
+    width, height = VIDEO_SIZE
+    title = clean_tts_text(title) or "Untitled Story"
+
+    print(
+        f"📖 Creating opening title page: {title}",
+        flush=True
+    )
+
+    img = Image.new(
+        "RGB",
+        (width, height),
+        (7, 26, 51)
+    )
+
+    draw = ImageDraw.Draw(img)
+
+    # Vertical background gradient.
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+
+        r = int(7 + 4 * ratio)
+        g = int(26 + 18 * ratio)
+        b = int(51 + 20 * ratio)
+
+        draw.line(
+            (0, y, width, y),
+            fill=(r, g, b)
+        )
+
+    # Decorative glows.
+    try:
+        glow = Image.new(
+            "RGBA",
+            (width, height),
+            (0, 0, 0, 0)
+        )
+
+        glow_draw = ImageDraw.Draw(glow)
+
+        glow_draw.ellipse(
+            (-180, -180, 350, 350),
+            fill=(0, 123, 255, 55)
+        )
+
+        glow_draw.ellipse(
+            (
+                width - 330,
+                height - 330,
+                width + 180,
+                height + 180
+            ),
+            fill=(255, 165, 0, 45)
+        )
+
+        img = Image.alpha_composite(
+            img.convert("RGBA"),
+            glow
+        ).convert("RGB")
+
+        draw = ImageDraw.Draw(img)
+
+    except Exception:
+        pass
+
+    # Main card.
+    card_margin = 35
+    card_top = 55
+    card_bottom = height - 55
+
+    draw.rounded_rectangle(
+        (
+            card_margin,
+            card_top,
+            width - card_margin,
+            card_bottom
+        ),
+        radius=35,
+        fill=(24, 47, 72),
+        outline=(90, 120, 150),
+        width=2
+    )
+
+    # Fonts.
+    small_font = get_unicode_font(24, bold=False)
+    title_font = get_unicode_font(54, bold=True)
+    footer_font = get_cta_latin_font(19, bold=True)
+
+    # Logo.
+    logo_path = prepare_round_logo()
+
+    if logo_path and os.path.exists(logo_path):
+        try:
+            with Image.open(logo_path).convert("RGBA") as logo:
+                logo_size = 190
+
+                logo = logo.resize(
+                    (logo_size, logo_size),
+                    Image.Resampling.LANCZOS
+                )
+
+                logo_x = (width - logo_size) // 2
+                logo_y = 115
+
+                img.paste(
+                    logo,
+                    (logo_x, logo_y),
+                    logo
+                )
+
+        except Exception as e:
+            print(
+                f"⚠️ Title-card logo failed: {e}",
+                flush=True
+            )
+
+    draw = ImageDraw.Draw(img)
+
+    # "STORY" label.
+    label = "STORY"
+
+    bbox = draw.textbbox(
+        (0, 0),
+        label,
+        font=small_font
+    )
+
+    label_width = bbox[2] - bbox[0]
+
+    draw.text(
+        (
+            (width - label_width) // 2,
+            350
+        ),
+        label,
+        font=small_font,
+        fill=(220, 235, 250),
+        stroke_width=1,
+        stroke_fill=(0, 0, 0)
+    )
+
+    # MongoDB story title.
+    title_lines = wrap_title_text(
+        title,
+        title_font,
+        width - 110,
+        draw
+    )
+
+    # If the title is very long, reduce font size once.
+    if len(title_lines) > 5:
+        title_font = get_unicode_font(42, bold=True)
+
+        title_lines = wrap_title_text(
+            title,
+            title_font,
+            width - 100,
+            draw
+        )
+
+    line_height = 75
+    total_title_height = len(title_lines) * line_height
+
+    start_y = (
+        455
+        - total_title_height // 2
+    )
+
+    for index, line_text in enumerate(title_lines):
+        bbox = draw.textbbox(
+            (0, 0),
+            line_text,
+            font=title_font
+        )
+
+        text_width = bbox[2] - bbox[0]
+
+        x = (width - text_width) // 2
+        y = start_y + index * line_height
+
+        draw.text(
+            (x, y),
+            line_text,
+            font=title_font,
+            fill=(255, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0)
+        )
+
+    # Decorative separator.
+    separator_y = min(
+        690,
+        start_y + total_title_height + 70
+    )
+
+    draw.rounded_rectangle(
+        (
+            130,
+            separator_y,
+            width - 130,
+            separator_y + 5
+        ),
+        radius=3,
+        fill=(255, 126, 0)
+    )
+
+    # Bottom branding.
+    branding = "SMART LEARNING LAB"
+
+    bbox = draw.textbbox(
+        (0, 0),
+        branding,
+        font=footer_font
+    )
+
+    branding_width = bbox[2] - bbox[0]
+
+    draw.text(
+        (
+            (width - branding_width) // 2,
+            height - 150
+        ),
+        branding,
+        font=footer_font,
+        fill=(205, 220, 235),
+        stroke_width=1,
+        stroke_fill=(0, 0, 0)
+    )
+
+    path = "images/_title_card.png"
+
+    img.save(path)
+
+    print(
+        f"✅ Opening title page created: {path}",
+        flush=True
+    )
+
+    return ImageClip(path).set_duration(duration)
+
+
+# ============================================================
 # BUILD VIDEO
 # ============================================================
 
 def build_video(
-    scenes
+    scenes,
+    title
 ):
     clips = []
 
+    # Add MongoDB story title page FIRST.
+    print(
+        f"\\n📖 Adding opening title page: {title}",
+        flush=True
+    )
+
+    clips.append(
+        create_title_card(
+            title,
+            TITLE_CARD_DURATION
+        )
+    )
+
+    # Add story scenes after the title page.
     for i, scene in enumerate(scenes):
         clip = create_scene(
             scene,
@@ -2005,7 +2318,11 @@ if __name__ == "__main__":
         print(f"🎬 SCENES: {len(scenes)}", flush=True)
 
         # Build video.
-        build_video(scenes)
+        # The title comes directly from the MongoDB story document.
+        build_video(
+            scenes,
+            title
+        )
 
         # Only mark COMPLETED after the final MP4 is successfully written.
         if not os.path.exists("final_video.mp4"):
