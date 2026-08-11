@@ -166,24 +166,49 @@ def _cover_existing_title(img):
     return result
 
 
-def _fit_font_for_text(text, max_width, start_size, bold=True):
-    """Return the largest Devanagari font that fits max_width."""
-    for size in range(start_size, 20, -2):
+def _fit_font_for_text(
+    text,
+    max_width,
+    start_size,
+    bold=True,
+    max_height=None,
+    min_size=28
+):
+    """
+    Return the largest Devanagari font that fits both width and height.
+
+    This is important for long Hindi titles. The old implementation only
+    checked width, which could still produce an oversized line vertically
+    and cause the title to collide with other poster elements.
+    """
+    if not text:
+        return find_devanagari_font(min_size, bold=bold)
+
+    probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+
+    for size in range(start_size, min_size - 1, -2):
         font = find_devanagari_font(size, bold=bold)
 
-        bbox = ImageDraw.Draw(
-            Image.new("RGB", (10, 10))
-        ).textbbox(
+        bbox = probe.textbbox(
             (0, 0),
             text,
             font=font,
-            stroke_width=0
+            stroke_width=2
         )
 
-        if (bbox[2] - bbox[0]) <= max_width:
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
+        width_ok = text_width <= max_width
+        height_ok = (
+            max_height is None
+            or text_height <= max_height
+        )
+
+        if width_ok and height_ok:
             return font
 
-    return find_devanagari_font(20, bold=bold)
+    return find_devanagari_font(min_size, bold=bold)
 
 
 def _draw_3d_title(draw, center_x, y, text, font, fill):
@@ -342,29 +367,89 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
     # ------------------------------------------------------------
     first, middle, last = _split_title_for_design(title)
 
-    # Main title area is deliberately large, matching the reference.
-    # White first line.
-    if first:
+    # The title has a fixed safe region between the top artwork and the
+    # subtitle plaque. Font size is calculated from BOTH available width
+    # and available vertical space, so long titles automatically become
+    # smaller instead of overflowing/repeating across the card.
+    title_top = int(height * 0.255)
+    title_bottom = int(height * 0.555)
+    title_region_height = title_bottom - title_top
+
+    # Small horizontal safety margin.
+    title_max_width = int(width * 0.86)
+
+    if middle:
+        # Three visual parts: first phrase, "और", second phrase.
+        # Allocate more vertical space to the two actual title phrases.
+        first_max_height = int(title_region_height * 0.32)
+        middle_max_height = int(title_region_height * 0.22)
+        last_max_height = int(title_region_height * 0.32)
+
         first_font = _fit_font_for_text(
             first,
-            int(width * 0.82),
+            title_max_width,
             125,
-            bold=True
+            bold=True,
+            max_height=first_max_height,
+            min_size=30
         )
 
-        first_bbox = draw.textbbox(
-            (0, 0),
-            first,
-            font=first_font
+        middle_font = _fit_font_for_text(
+            middle,
+            int(width * 0.35),
+            72,
+            bold=True,
+            max_height=middle_max_height,
+            min_size=28
         )
 
-        first_width = first_bbox[2] - first_bbox[0]
+        last_font = _fit_font_for_text(
+            last,
+            title_max_width,
+            125,
+            bold=True,
+            max_height=last_max_height,
+            min_size=30
+        )
 
-        # If there are three parts, first line sits above "और".
-        if middle:
-            first_y = int(height * 0.285)
-        else:
-            first_y = int(height * 0.325)
+        # Calculate actual rendered heights and center each line inside
+        # its allocated slot. This prevents long titles from overlapping.
+        def text_height(font, value, stroke=2):
+            bbox = draw.textbbox(
+                (0, 0),
+                value,
+                font=font,
+                stroke_width=stroke
+            )
+            return bbox[3] - bbox[1]
+
+        first_h = text_height(first_font, first)
+        middle_h = text_height(middle_font, middle)
+        last_h = text_height(last_font, last)
+
+        first_slot_top = int(height * 0.265)
+        first_slot_bottom = int(height * 0.355)
+
+        middle_slot_top = int(height * 0.355)
+        middle_slot_bottom = int(height * 0.425)
+
+        last_slot_top = int(height * 0.425)
+        last_slot_bottom = int(height * 0.515)
+
+        first_y = first_slot_top + max(
+            0,
+            (first_slot_bottom - first_slot_top - first_h) // 2
+        )
+
+        middle_y = middle_slot_top + max(
+            0,
+            (middle_slot_bottom - middle_slot_top - middle_h) // 2
+        )
+
+        last_y = last_slot_top + max(
+            0,
+            (last_slot_bottom - last_slot_top - last_h) // 2
+        )
 
         _draw_3d_title(
             draw,
@@ -375,37 +460,14 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
             (238, 238, 235)
         )
 
-    # Orange "और".
-    if middle:
-        middle_font = _fit_font_for_text(
-            middle,
-            int(width * 0.35),
-            72,
-            bold=True
-        )
-
         _draw_3d_title(
             draw,
             center_x,
-            int(height * 0.385),
+            middle_y,
             middle,
             middle_font,
             (255, 143, 10)
         )
-
-    # Orange second phrase.
-    if last:
-        last_font = _fit_font_for_text(
-            last,
-            int(width * 0.82),
-            125,
-            bold=True
-        )
-
-        if middle:
-            last_y = int(height * 0.435)
-        else:
-            last_y = int(height * 0.405)
 
         _draw_3d_title(
             draw,
@@ -415,6 +477,92 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
             last_font,
             (255, 157, 12)
         )
+
+    else:
+        # Titles without "और" are split into two balanced phrases.
+        # Use a slightly smaller maximum size because the entire title
+        # must fit comfortably inside the same safe region.
+        first_font = _fit_font_for_text(
+            first,
+            title_max_width,
+            120,
+            bold=True,
+            max_height=int(title_region_height * 0.38),
+            min_size=30
+        )
+
+        last_font = None
+
+        if last:
+            last_font = _fit_font_for_text(
+                last,
+                title_max_width,
+                120,
+                bold=True,
+                max_height=int(title_region_height * 0.38),
+                min_size=30
+            )
+
+        def text_height(font, value, stroke=2):
+            bbox = draw.textbbox(
+                (0, 0),
+                value,
+                font=font,
+                stroke_width=stroke
+            )
+            return bbox[3] - bbox[1]
+
+        first_h = text_height(first_font, first)
+
+        if last:
+            last_h = text_height(last_font, last)
+
+            first_slot_top = int(height * 0.285)
+            first_slot_bottom = int(height * 0.395)
+
+            last_slot_top = int(height * 0.395)
+            last_slot_bottom = int(height * 0.505)
+
+            first_y = first_slot_top + max(
+                0,
+                (first_slot_bottom - first_slot_top - first_h) // 2
+            )
+
+            last_y = last_slot_top + max(
+                0,
+                (last_slot_bottom - last_slot_top - last_h) // 2
+            )
+
+            _draw_3d_title(
+                draw,
+                center_x,
+                first_y,
+                first,
+                first_font,
+                (238, 238, 235)
+            )
+
+            _draw_3d_title(
+                draw,
+                center_x,
+                last_y,
+                last,
+                last_font,
+                (255, 157, 12)
+            )
+
+        else:
+            # Very short one-line title.
+            first_y = int(height * 0.355)
+
+            _draw_3d_title(
+                draw,
+                center_x,
+                first_y,
+                first,
+                first_font,
+                (238, 238, 235)
+            )
 
     # ------------------------------------------------------------
     # Keep the subtitle plaque from the supplied design.
