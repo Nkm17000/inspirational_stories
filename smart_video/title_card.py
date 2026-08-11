@@ -211,7 +211,15 @@ def _fit_font_for_text(
     return find_devanagari_font(min_size, bold=bold)
 
 
-def _draw_3d_title(draw, center_x, y, text, font, fill):
+def _draw_3d_title(
+    draw,
+    center_x,
+    y,
+    text,
+    font,
+    fill,
+    align="center",
+):
     """
     Recreate the heavy 3D/shadow look of the supplied title artwork.
     """
@@ -223,7 +231,14 @@ def _draw_3d_title(draw, center_x, y, text, font, fill):
     )
 
     text_width = bbox[2] - bbox[0]
-    x = center_x - text_width // 2
+
+    # Horizontal alignment for special 2-word titles.
+    if align == "left":
+        x = int(draw._image.width * 0.08)
+    elif align == "right":
+        x = int(draw._image.width * 0.92) - text_width
+    else:
+        x = center_x - text_width // 2
 
     # Deep black/brown shadow.
     for offset in range(16, 5, -2):
@@ -313,59 +328,135 @@ def _normalize_title(title):
 
 def _split_title_for_design(title):
     """
-    Split the cleaned title into the supplied poster design:
+    Split the title according to the requested word-count rules.
 
-        first phrase -> white
-        "और"         -> orange
-        second phrase -> orange
+    Rules:
+      - Fewer than 6 words:
+          Keep the existing logic.
+          If "और" exists, render:
+              first phrase / और / remaining phrase.
+          Otherwise use the existing balanced split.
 
-    The title is cleaned first so duplicated MongoDB/generated text
-    cannot appear twice on the title card.
+      - 6 to 12 words:
+          Line 1 = first 2 words
+          Line 2 = next 3 words
+          Line 3 = all remaining words
+
+      - More than 12 words:
+          Divide into 3 nearly equal groups.
+          Extra words ALWAYS go to the last line.
+
+          Examples:
+              13 -> 4 / 4 / 5
+              14 -> 4 / 4 / 6
+              15 -> 5 / 5 / 5
+              16 -> 5 / 5 / 6
+              17 -> 5 / 5 / 7
+
+      - Exactly 2 words:
+          Line 1 = first word, LEFT aligned
+          Line 3 = second word, RIGHT aligned
+
+    IMPORTANT:
+      The function does not remove or change words from the title.
+      It only controls how the title is displayed.
     """
 
     title = _normalize_title(title)
-
-    if "और" in title:
-        before, after = title.split("और", 1)
-
-        before = before.strip()
-        after = after.strip()
-
-        # If the second part is still excessively long, balance it
-        # into a compact phrase instead of allowing it to overflow.
-        after_words = after.split()
-
-        if len(after_words) > 8:
-            # Keep the first part meaningful and shorten the visual
-            # title to a maximum of two lines after "और".
-            # The complete story title remains unchanged in MongoDB.
-            after = " ".join(after_words[:8])
-
-        return (
-            before,
-            "और",
-            after,
-        )
-
     words = title.split()
+    count = len(words)
 
-    if len(words) <= 3:
+    # --------------------------------------------------------
+    # Exactly 2 words
+    # --------------------------------------------------------
+    if count == 2:
         return (
-            title,
+            words[0],
             "",
-            "",
+            words[1],
+            "left",
+            "right",
         )
 
-    # Balanced two-line title.
-    midpoint = max(
-        1,
-        len(words) // 2,
-    )
+    # --------------------------------------------------------
+    # Fewer than 6 words: keep the existing logic
+    # --------------------------------------------------------
+    if count < 6:
+
+        if "और" in title:
+            before, after = title.split("और", 1)
+
+            return (
+                before.strip(),
+                "और",
+                after.strip(),
+                "center",
+                "center",
+            )
+
+        if count <= 3:
+            return (
+                title,
+                "",
+                "",
+                "center",
+                "center",
+            )
+
+        midpoint = max(1, count // 2)
+
+        return (
+            " ".join(words[:midpoint]),
+            "",
+            " ".join(words[midpoint:]),
+            "center",
+            "center",
+        )
+
+    # --------------------------------------------------------
+    # 6 to 12 words
+    #
+    # 1st line = 2 words
+    # 2nd line = 3 words
+    # 3rd line = remaining words
+    # --------------------------------------------------------
+    if 6 <= count <= 12:
+
+        return (
+            " ".join(words[:2]),
+            " ".join(words[2:5]),
+            " ".join(words[5:]),
+            "center",
+            "center",
+        )
+
+    # --------------------------------------------------------
+    # More than 12 words
+    #
+    # Divide by 3.
+    # Any remainder goes ONLY to the last line.
+    #
+    # Examples:
+    # 13 = 4 / 4 / 5
+    # 14 = 4 / 4 / 6
+    # 15 = 5 / 5 / 5
+    # --------------------------------------------------------
+    base = count // 3
+
+    first_count = base
+    second_count = base
+    last_count = count - first_count - second_count
 
     return (
-        " ".join(words[:midpoint]),
-        "",
-        " ".join(words[midpoint:]),
+        " ".join(words[:first_count]),
+        " ".join(
+            words[first_count:first_count + second_count]
+        ),
+        " ".join(
+            words[first_count + second_count:]
+        ),
+        "center",
+        "center",
     )
 
 def create_title_card(title, duration=TITLE_CARD_DURATION):
@@ -446,7 +537,13 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
     # ------------------------------------------------------------
     # Dynamic DB title
     # ------------------------------------------------------------
-    first, middle, last = _split_title_for_design(title)
+    (
+        first,
+        middle,
+        last,
+        first_align,
+        last_align,
+    ) = _split_title_for_design(title)
 
     # The title has a fixed safe region between the top artwork and the
     # subtitle plaque. Font size is calculated from BOTH available width
@@ -460,8 +557,8 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
     title_max_width = int(width * 0.86)
 
     if middle:
-        # Three visual parts: first phrase, "और", second phrase.
-        # Allocate more vertical space to the two actual title phrases.
+        # Three visual parts.
+        # Allocate vertical space across all three title lines.
         first_max_height = int(title_region_height * 0.32)
         middle_max_height = int(title_region_height * 0.22)
         last_max_height = int(title_region_height * 0.32)
@@ -538,7 +635,8 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
             first_y,
             first,
             first_font,
-            (238, 238, 235)
+            (238, 238, 235),
+            align=first_align,
         )
 
         _draw_3d_title(
@@ -556,7 +654,8 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
             last_y,
             last,
             last_font,
-            (255, 157, 12)
+            (255, 157, 12),
+            align=last_align,
         )
 
     else:
@@ -620,7 +719,8 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
                 first_y,
                 first,
                 first_font,
-                (238, 238, 235)
+                (238, 238, 235),
+                align=first_align,
             )
 
             _draw_3d_title(
@@ -629,7 +729,8 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
                 last_y,
                 last,
                 last_font,
-                (255, 157, 12)
+                (255, 157, 12),
+                align=last_align,
             )
 
         else:
@@ -642,7 +743,8 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
                 first_y,
                 first,
                 first_font,
-                (238, 238, 235)
+                (238, 238, 235),
+                align=first_align,
             )
 
     # ------------------------------------------------------------
