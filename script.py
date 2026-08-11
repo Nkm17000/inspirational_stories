@@ -613,48 +613,37 @@ def generate_voice(
 # SUBTITLE
 # ============================================================
 
-def create_subtitle(
-    text,
-    duration,
-    word_timings
-):
+def create_subtitle(text, duration, word_timings=None):
     """
-    Progressive subtitles synchronized with Edge-TTS.
+    Subtitle timing based on the ACTUAL VOICE DURATION.
 
-    Behavior:
-      1. Start with the FIRST spoken word.
-      2. Add words as they are spoken.
-      3. Keep the complete spoken text in order.
-      4. Wrap it into a maximum of 3 lines.
-      5. When a 4th line is needed, scroll upward by one line.
-      6. Never jump directly to the last 5 words.
+    The sentence is divided into 3 word groups.
+
+    Example for 21 words:
+        Group 1 = words 1-7
+        Group 2 = words 8-14
+        Group 3 = words 15-21
+
+    The duration of each group is proportional to its number of words.
 
     Example:
+        Voice = 21 seconds
+        21 words / 3 groups = 7 words per group
 
-        Deep
-        Deep inside
-        Deep inside a vast
-        Deep inside a vast
-        mountain forest,
+        Group 1 -> 0-7 sec
+        Group 2 -> 7-14 sec
+        Group 3 -> 14-21 sec
 
-    Later, when the subtitle becomes longer:
-
-        mountain forest, a lonely
-        woodcutter named Arjun lived
-        in a small cabin
-
-    The visible text changes at the actual Edge-TTS
-    WordBoundary timestamp.
+    IMPORTANT:
+    We intentionally do NOT use Edge-TTS WordBoundary timestamps here.
+    The subtitle timing is calculated from the total generated voice
+    duration, exactly according to the requested 7-word grouping logic.
     """
 
     FONT_SIZE = 40
     MAX_CHARS_PER_LINE = 22
     MAX_LINES = 3
     LINE_HEIGHT = 60
-
-    # ------------------------------------------------------------
-    # Load font
-    # ------------------------------------------------------------
 
     try:
         font = ImageFont.truetype(
@@ -665,135 +654,91 @@ def create_subtitle(
         font = ImageFont.load_default()
 
     # ------------------------------------------------------------
-    # If timings are unavailable, show the complete sentence
-    # statically instead of losing the beginning.
+    # Split sentence into words
     # ------------------------------------------------------------
 
-    if not word_timings:
-        print(
-            "⚠️ No WordBoundary timings - static subtitle fallback",
-            flush=True
+    words = text.split()
+
+    if not words:
+        return ImageClip(
+            np.zeros((VIDEO_SIZE[1], VIDEO_SIZE[0], 4), dtype=np.uint8)
+        ).set_duration(duration)
+
+    total_words = len(words)
+
+    # ------------------------------------------------------------
+    # Divide words into 3 approximately equal groups.
+    #
+    # Examples:
+    # 21 words -> 7 / 7 / 7
+    # 20 words -> 7 / 7 / 6
+    # 10 words -> 4 / 3 / 3
+    #  5 words -> 2 / 2 / 1
+    # ------------------------------------------------------------
+
+    group_count = min(3, total_words)
+
+    base_size = total_words // group_count
+    remainder = total_words % group_count
+
+    groups = []
+    start_index = 0
+
+    for group_index in range(group_count):
+        group_size = base_size + (
+            1 if group_index < remainder else 0
         )
 
-        return _render_static_subtitle(
-            text,
-            duration,
-            font,
-            MAX_CHARS_PER_LINE,
-            MAX_LINES,
-            LINE_HEIGHT
-        )
+        group_words = words[
+            start_index:start_index + group_size
+        ]
+
+        groups.append(group_words)
+        start_index += group_size
 
     # ------------------------------------------------------------
-    # Normalize timings and preserve ORIGINAL WORD ORDER.
-    # ------------------------------------------------------------
-
-    cleaned = []
-
-    for item in word_timings:
-
-        word = str(
-            item.get("word", "")
-        ).strip()
-
-        if not word:
-            continue
-
-        try:
-            start_time = float(
-                item.get("start", 0)
-            )
-
-            end_time = float(
-                item.get("end", start_time)
-            )
-
-        except (TypeError, ValueError):
-            continue
-
-        cleaned.append({
-            "word": word,
-            "start": max(0.0, start_time),
-            "end": max(
-                start_time,
-                end_time
-            )
-        })
-
-    if not cleaned:
-        return _render_static_subtitle(
-            text,
-            duration,
-            font,
-            MAX_CHARS_PER_LINE,
-            MAX_LINES,
-            LINE_HEIGHT
-        )
-
-    # ------------------------------------------------------------
-    # IMPORTANT:
+    # Create one subtitle clip for each word group.
     #
-    # We do NOT use:
-    #
-    #     word_index - 5
-    #
-    # because that caused the subtitle to show only:
-    #
-    #     "lonely woodcutter named Arjun"
-    #
-    # Instead, at word N we display ALL words from the beginning
-    # up to word N, then show the last 3 wrapped lines.
+    # Timing is based on the TOTAL VOICE DURATION.
     # ------------------------------------------------------------
 
     subtitle_clips = []
+    elapsed = 0.0
 
-    spoken_words = []
+    for group_index, group_words in enumerate(groups):
 
-    for word_index, current in enumerate(cleaned):
+        word_count = len(group_words)
 
-        spoken_words.append(
-            current["word"]
+        # Each word gets an equal share of the voice duration.
+        group_duration = (
+            duration * word_count / total_words
         )
 
-        start_time = current["start"]
+        start_time = elapsed
 
-        if word_index + 1 < len(cleaned):
-            end_time = cleaned[
-                word_index + 1
-            ]["start"]
-        else:
+        # Make the last group end exactly at duration.
+        if group_index == len(groups) - 1:
             end_time = duration
+        else:
+            end_time = min(
+                duration,
+                start_time + group_duration
+            )
 
-        # Clamp to scene/audio duration.
-        start_time = max(
-            0.0,
-            min(start_time, duration)
-        )
+        elapsed = end_time
 
-        end_time = max(
-            start_time,
-            min(end_time, duration)
-        )
-
-        if end_time <= start_time:
-            continue
+        group_text = " ".join(group_words)
 
         # --------------------------------------------------------
-        # Build subtitle from ALL words spoken so far.
-        # --------------------------------------------------------
-
-        all_text = " ".join(
-            spoken_words
-        )
-
-        # --------------------------------------------------------
-        # Wrap from the beginning of the sentence.
+        # Wrap this group into maximum 3 lines.
+        # IMPORTANT:
+        # We display the ENTIRE group, not only the last words.
         # --------------------------------------------------------
 
         lines = []
         line = ""
 
-        for word in all_text.split():
+        for word in group_words:
 
             candidate = (
                 f"{line} {word}".strip()
@@ -810,29 +755,32 @@ def create_subtitle(
         if line:
             lines.append(line)
 
-        # --------------------------------------------------------
-        # Only the visible 3-line viewport is shown.
-        #
-        # IMPORTANT:
-        # This does NOT mean we discard words from the sentence.
-        # The complete sentence is retained in spoken_words.
-        # We only move the visual viewport when necessary.
-        # --------------------------------------------------------
+        # If a group somehow needs more than 3 lines,
+        # preserve the whole group by reducing the font slightly.
+        render_font = font
 
-        visible_lines = lines[-MAX_LINES:]
+        if len(lines) > MAX_LINES:
+            try:
+                render_font = ImageFont.truetype(
+                    "DejaVuSans-Bold.ttf",
+                    34
+                )
+            except Exception:
+                render_font = font
 
         # --------------------------------------------------------
-        # Debug log - very useful in GitHub Actions.
+        # Debug log
         # --------------------------------------------------------
 
         print(
-            f"📝 Subtitle @ {start_time:.3f}s: "
-            f"{' | '.join(visible_lines)}",
+            f"📝 Subtitle group {group_index + 1}/{len(groups)}: "
+            f"{start_time:.2f}s -> {end_time:.2f}s | "
+            f"{word_count} words | {group_text}",
             flush=True
         )
 
         # --------------------------------------------------------
-        # Render transparent subtitle frame.
+        # Render subtitle image
         # --------------------------------------------------------
 
         img = Image.new(
@@ -843,9 +791,10 @@ def create_subtitle(
 
         draw = ImageDraw.Draw(img)
 
+        visible_lines = lines[:MAX_LINES]
+
         block_height = (
-            len(visible_lines)
-            * LINE_HEIGHT
+            len(visible_lines) * LINE_HEIGHT
         )
 
         y = (
@@ -861,12 +810,11 @@ def create_subtitle(
             bbox = draw.textbbox(
                 (0, 0),
                 line_text,
-                font=font
+                font=render_font
             )
 
             width = (
-                bbox[2]
-                - bbox[0]
+                bbox[2] - bbox[0]
             )
 
             draw.text(
@@ -875,24 +823,20 @@ def create_subtitle(
                         VIDEO_SIZE[0]
                         - width
                     ) // 2,
-                    y
-                    + line_index
-                    * LINE_HEIGHT
+                    y + line_index * LINE_HEIGHT
                 ),
                 line_text,
-                font=font,
+                font=render_font,
                 fill=(255, 255, 0),
                 stroke_width=3,
                 stroke_fill=(0, 0, 0)
             )
 
         subtitle_clip = (
-            ImageClip(
-                np.array(img)
-            )
+            ImageClip(np.array(img))
             .set_start(start_time)
             .set_duration(
-                end_time - start_time
+                max(0.001, end_time - start_time)
             )
         )
 
@@ -900,112 +844,11 @@ def create_subtitle(
             subtitle_clip
         )
 
-    if not subtitle_clips:
-        return _render_static_subtitle(
-            text,
-            duration,
-            font,
-            MAX_CHARS_PER_LINE,
-            MAX_LINES,
-            LINE_HEIGHT
-        )
-
     return CompositeVideoClip(
         subtitle_clips,
         size=VIDEO_SIZE
     ).set_duration(duration)
 
-
-def _render_static_subtitle(
-    text,
-    duration,
-    font,
-    max_chars_per_line,
-    max_lines,
-    line_height
-):
-    """
-    Static fallback used only when Edge-TTS timings fail.
-    It keeps the LAST visible lines because there is no timing
-    information available to progressively reveal the sentence.
-    """
-
-    img = Image.new(
-        "RGBA",
-        VIDEO_SIZE,
-        (0, 0, 0, 0)
-    )
-
-    draw = ImageDraw.Draw(img)
-
-    lines = []
-    line = ""
-
-    for word in text.split():
-
-        candidate = (
-            f"{line} {word}".strip()
-        )
-
-        if len(candidate) <= max_chars_per_line:
-            line = candidate
-        else:
-            if line:
-                lines.append(line)
-
-            line = word
-
-    if line:
-        lines.append(line)
-
-    visible_lines = lines[-max_lines:]
-
-    block_height = (
-        len(visible_lines)
-        * line_height
-    )
-
-    y = (
-        VIDEO_SIZE[1]
-        - 180
-        - block_height
-    )
-
-    for line_index, line_text in enumerate(
-        visible_lines
-    ):
-
-        bbox = draw.textbbox(
-            (0, 0),
-            line_text,
-            font=font
-        )
-
-        width = (
-            bbox[2]
-            - bbox[0]
-        )
-
-        draw.text(
-            (
-                (
-                    VIDEO_SIZE[0]
-                    - width
-                ) // 2,
-                y
-                + line_index
-                * line_height
-            ),
-            line_text,
-            font=font,
-            fill=(255, 255, 0),
-            stroke_width=3,
-            stroke_fill=(0, 0, 0)
-        )
-
-    return ImageClip(
-        np.array(img)
-    ).set_duration(duration)
 
 # ============================================================
 # FULLSCREEN IMAGE CLIP
@@ -1183,10 +1026,18 @@ def create_scene(
     # Create subtitle
     # --------------------------------------------------------
 
+    # Subtitle timing is based on the actual generated voice duration.
+    # If voice is shorter than MIN_DURATION, subtitles follow the voice
+    # and the remaining video time stays without subtitle.
+    subtitle_duration = (
+        audio.duration
+        if audio
+        else duration
+    )
+
     subtitle = create_subtitle(
         text,
-        duration,
-        word_timings
+        subtitle_duration
     )
 
     final = CompositeVideoClip(
