@@ -24,181 +24,154 @@ from .subtitles import create_subtitle
 def _apply_ken_burns(
     clip,
     duration,
-    motion_index,
+    movement_index,
 ):
     """
-    Add subtle cinematic camera movement to a still image.
+    Apply a smooth cinematic camera move.
 
-    The source clip is first slightly enlarged and then slowly
-    moves/zooms during the scene.
-
-    Motion patterns alternate between scenes/images so the whole
-    video does not feel repetitive:
-
-        0 -> slow zoom in + slight left-to-right movement
-        1 -> slow zoom out + slight right-to-left movement
-        2 -> slow zoom in + slight right-to-left movement
-        3 -> slow zoom out + slight left-to-right movement
-
-    The clip is cropped back to VIDEO_SIZE, so no black bars appear.
+    V4 behavior:
+      - Every image moves LEFT -> RIGHT.
+      - No alternating left/right movement.
+      - Movement is slow and continuous.
+      - Zoom is extremely subtle so the image feels like a
+        camera shot rather than a slideshow.
+      - The direction remains consistent from image 1 -> image 3.
     """
 
-    width, height = VIDEO_SIZE
+    if duration <= 0:
+        return clip
 
-    # Cinematic movement:
-    # enough motion to make a still image feel like a camera shot,
-    # but not so much that AI artwork looks distorted.
-    zoom_start = 1.035
-    zoom_end = 1.105
+    # Very subtle cinematic push-in.
+    zoom_start = 1.02
+    zoom_end = 1.075
 
-    pattern = motion_index % 4
+    # Keep the same left-to-right direction for every image.
+    # The image is positioned slightly left at the beginning and
+    # gradually moves toward the right side.
+    pan_amount = 0.035
 
-    if pattern == 0:
-        # Zoom in, move from left to right.
-        direction = 1
-        zoom_from = zoom_start
-        zoom_to = zoom_end
+    def ease_in_out(t):
+        """
+        Smoothstep easing:
+        slow start -> smooth middle -> slow finish.
+        """
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
 
-    elif pattern == 1:
-        # Zoom out, move from right to left.
-        direction = -1
-        zoom_from = zoom_end
-        zoom_to = zoom_start
-
-    elif pattern == 2:
-        # Zoom in, move from right to left.
-        direction = -1
-        zoom_from = zoom_start
-        zoom_to = zoom_end
-
-    else:
-        # Zoom out, move from left to right.
-        direction = 1
-        zoom_from = zoom_end
-        zoom_to = zoom_start
-
-    # Resize dynamically over time.
-    def ease_in_out(progress):
-        # Smoothstep: slow start -> natural acceleration -> slow finish.
-        progress = min(
-            1.0,
-            max(0.0, progress)
-        )
-        return (
-            progress * progress
-            * (3.0 - 2.0 * progress)
-        )
-
-    animated = clip.resize(
-        lambda t: (
-            zoom_from
-            + (zoom_to - zoom_from)
-            * ease_in_out(
-                t / max(duration, 0.001)
-            )
-        )
-    )
-
-    # After resizing, crop a VIDEO_SIZE window that moves slowly
-    # horizontally. This gives a real camera-pan feeling.
-    def crop_frame(get_frame, t):
-
+    def transform(get_frame, t):
         frame = get_frame(t)
 
-        frame_h, frame_w = frame.shape[:2]
+        h, w = frame.shape[:2]
 
+        progress = (
+            t / duration
+            if duration > 0
+            else 1.0
+        )
+
+        eased = ease_in_out(progress)
+
+        zoom = (
+            zoom_start
+            + (zoom_end - zoom_start) * eased
+        )
+
+        # Scale around the center first.
+        new_w = max(
+            w,
+            int(w * zoom)
+        )
+
+        new_h = max(
+            h,
+            int(h * zoom)
+        )
+
+        from PIL import Image
+
+        pil = Image.fromarray(
+            frame.astype("uint8")
+        )
+
+        pil = pil.resize(
+            (new_w, new_h),
+            Image.Resampling.LANCZOS
+        )
+
+        arr = np.array(pil)
+
+        # Left -> right camera travel.
+        # At the beginning we show a little more of the left side;
+        # by the end we reveal a little more of the right side.
         max_x = max(
             0,
-            frame_w - width
+            new_w - w
         )
 
         max_y = max(
             0,
-            frame_h - height
+            new_h - h
         )
 
-        progress = min(
-            1.0,
-            max(
-                0.0,
-                t / max(duration, 0.001)
-            )
-        )
-
-        # Use the same smooth easing for camera movement.
-        eased = (
-            progress * progress
-            * (3.0 - 2.0 * progress)
-        )
-
-        # Keep vertical movement very small and cinematic.
-        vertical_progress = (
-            0.5
-            + 0.06 * np.sin(
-                eased * np.pi
-            )
-        )
-
-        if direction > 0:
-            horizontal_progress = eased
-        else:
-            horizontal_progress = 1.0 - eased
-
+        # Use only a small portion of the available horizontal travel.
         x = int(
-            max_x * horizontal_progress
+            max_x * (
+                0.10
+                + pan_amount * 10.0 * eased
+            )
         )
 
+        # Keep vertical movement almost completely stable.
+        # This makes the shot feel like a horizontal camera slide.
         y = int(
-            max_y * vertical_progress
+            max_y * 0.50
         )
 
         x = max(
             0,
-            min(x, max_x)
+            min(
+                x,
+                max_x
+            )
         )
 
         y = max(
             0,
-            min(y, max_y)
+            min(
+                y,
+                max_y
+            )
         )
 
-        cropped = frame[
-            y:y + height,
-            x:x + width
+        cropped = arr[
+            y:y + h,
+            x:x + w
         ]
 
-        # Safety fallback in case MoviePy/PIL rounding produces
-        # a frame that is one pixel smaller than VIDEO_SIZE.
+        # Safety fallback in case rounding produces a smaller frame.
         if (
-            cropped.shape[0] != height
-            or cropped.shape[1] != width
+            cropped.shape[0] != h
+            or cropped.shape[1] != w
         ):
             from PIL import Image
 
             cropped = np.array(
                 Image.fromarray(
-                    cropped
+                    cropped.astype("uint8")
                 ).resize(
-                    (width, height),
+                    (w, h),
                     Image.Resampling.LANCZOS
                 )
             )
 
-        return cropped
+        return cropped.astype("uint8")
 
-    animated = animated.fl(
-        crop_frame,
-        apply_to=["mask"] if animated.mask else []
+    return clip.fl_image(
+        lambda frame: frame
+    ).fl(
+        lambda gf, t: transform(gf, t)
     )
 
-    return animated.set_duration(
-        duration
-    )
-
-
-# ============================================================
-# CREATE SCENE
-# ============================================================
 
 def create_scene(
     scene,
@@ -701,7 +674,7 @@ def create_scene(
 
     print(
         f"✅ Scene {scene_number} created "
-        f"with cinematic motion + "
+        f"with smooth left-to-right cinematic motion + "
         f"{transition_duration:.2f}s movie-style dissolve",
         flush=True
     )
