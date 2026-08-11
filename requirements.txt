@@ -1,8 +1,7 @@
-edge-tts
+moviepy==1.0.3
+Pillow==9.5.0
 pymongo
 requests
 numpy
+edge-tts
 nest-asyncio
-Pillow
-moviepy==1.0.3
-qrcode
