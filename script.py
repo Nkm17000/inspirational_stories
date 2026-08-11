@@ -514,6 +514,19 @@ def generate_voice(
     text,
     path
 ):
+    """
+    Generate voice and collect word-level timing from Edge-TTS.
+
+    Returns:
+        (audio_path, word_timings)
+
+    word_timings example:
+        {
+            "word": "Raju",
+            "start": 0.25,
+            "end": 0.60
+        }
+    """
 
     async def tts():
 
@@ -523,7 +536,49 @@ def generate_voice(
             rate="-15%"
         )
 
-        await communicate.save(path)
+        audio_bytes = bytearray()
+        word_timings = []
+
+        async for chunk in communicate.stream():
+
+            if chunk["type"] == "audio":
+
+                audio_bytes.extend(
+                    chunk["data"]
+                )
+
+            elif chunk["type"] == "WordBoundary":
+
+                offset = chunk.get("offset", 0)
+                word_duration = chunk.get("duration", 0)
+                word = chunk.get("text", "").strip()
+
+                if not word:
+                    continue
+
+                # Edge-TTS uses 100-nanosecond units.
+                start_seconds = offset / 10_000_000
+                end_seconds = (
+                    offset + word_duration
+                ) / 10_000_000
+
+                word_timings.append(
+                    {
+                        "word": word,
+                        "start": start_seconds,
+                        "end": end_seconds
+                    }
+                )
+
+        if not audio_bytes:
+            raise RuntimeError(
+                "Edge-TTS returned no audio"
+            )
+
+        with open(path, "wb") as f:
+            f.write(audio_bytes)
+
+        return word_timings
 
     for i in range(3):
 
@@ -534,9 +589,14 @@ def generate_voice(
                 flush=True
             )
 
-            asyncio.run(tts())
+            timings = asyncio.run(tts())
 
-            return path
+            print(
+                f"✅ Voice generated: {len(timings)} word timings",
+                flush=True
+            )
+
+            return path, timings
 
         except Exception as e:
 
@@ -553,8 +613,7 @@ def generate_voice(
         flush=True
     )
 
-    return None
-
+    return None, []
 
 # ============================================================
 # SUBTITLE
@@ -562,85 +621,301 @@ def generate_voice(
 
 def create_subtitle(
     text,
-    duration
+    duration,
+    word_timings
 ):
+    """
+    Create progressive subtitles synchronized with the voice.
 
-    img = Image.new(
-        "RGBA",
-        VIDEO_SIZE,
-        (0, 0, 0, 0)
-    )
+    The complete sentence is displayed progressively instead of
+    keeping only the last three lines.
 
-    draw = ImageDraw.Draw(img)
+    Each subtitle chunk contains a small number of words and is
+    timed using the WordBoundary timestamps returned by Edge-TTS.
+    """
 
-    try:
+    # --------------------------------------------------------
+    # FALLBACK: if Edge-TTS did not provide timings
+    # --------------------------------------------------------
 
-        font = ImageFont.truetype(
-            "DejaVuSans-Bold.ttf",
-            40
+    if not word_timings:
+
+        print(
+            "⚠️ Word timings unavailable - using static subtitle",
+            flush=True
         )
 
-    except:
+        img = Image.new(
+            "RGBA",
+            VIDEO_SIZE,
+            (0, 0, 0, 0)
+        )
 
-        font = ImageFont.load_default()
+        draw = ImageDraw.Draw(img)
 
-    words = text.split()
+        try:
+            font = ImageFont.truetype(
+                "DejaVuSans-Bold.ttf",
+                40
+            )
+        except:
+            font = ImageFont.load_default()
 
-    lines = []
+        words = text.split()
+        lines = []
+        line = ""
 
-    line = ""
+        for word in words:
 
-    for word in words:
+            test_line = (
+                f"{line} {word}".strip()
+            )
 
-        if len(line + word) < 22:
+            if len(test_line) <= 22:
+                line = test_line
 
-            line += word + " "
+            else:
+
+                if line:
+                    lines.append(line)
+
+                line = word
+
+        if line:
+            lines.append(line)
+
+        lines = lines[-3:]
+
+        y = VIDEO_SIZE[1] - 220
+
+        for i, line_text in enumerate(lines):
+
+            bbox = draw.textbbox(
+                (0, 0),
+                line_text,
+                font=font
+            )
+
+            width = bbox[2] - bbox[0]
+
+            draw.text(
+                (
+                    (VIDEO_SIZE[0] - width) // 2,
+                    y + i * 60
+                ),
+                line_text,
+                font=font,
+                fill=(255, 255, 0),
+                stroke_width=3,
+                stroke_fill=(0, 0, 0)
+            )
+
+        return ImageClip(
+            np.array(img)
+        ).set_duration(duration)
+
+    # --------------------------------------------------------
+    # SETTINGS
+    # --------------------------------------------------------
+
+    FONT_SIZE = 40
+    MAX_CHARS_PER_LINE = 22
+    MAX_LINES = 3
+
+    # Number of words shown at a time.
+    # This gives a running-subtitle effect while remaining readable.
+    WORDS_PER_CHUNK = 5
+
+    subtitle_clips = []
+
+    # --------------------------------------------------------
+    # Create timed chunks
+    # --------------------------------------------------------
+
+    chunks = []
+    current_chunk = []
+
+    for timing in word_timings:
+
+        current_chunk.append(timing)
+
+        word = timing["word"].strip()
+
+        # End a subtitle after a few words or punctuation.
+        punctuation_break = word.endswith(
+            (".", "!", "?", ";", ":")
+        )
+
+        if (
+            len(current_chunk) >= WORDS_PER_CHUNK
+            or punctuation_break
+        ):
+            chunks.append(current_chunk)
+            current_chunk = []
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    # --------------------------------------------------------
+    # Render each timed subtitle
+    # --------------------------------------------------------
+
+    for chunk_index, chunk in enumerate(chunks):
+
+        if not chunk:
+            continue
+
+        start_time = chunk[0]["start"]
+
+        # The next chunk starts exactly when the next group
+        # begins speaking.
+        if chunk_index + 1 < len(chunks):
+
+            end_time = (
+                chunks[chunk_index + 1][0]["start"]
+            )
 
         else:
 
-            lines.append(
-                line.strip()
+            end_time = duration
+
+        # Clamp timing to actual video duration.
+        start_time = max(
+            0,
+            min(start_time, duration)
+        )
+
+        end_time = max(
+            start_time,
+            min(end_time, duration)
+        )
+
+        if end_time <= start_time:
+            continue
+
+        # ----------------------------------------------------
+        # Build subtitle text
+        # ----------------------------------------------------
+
+        chunk_text = " ".join(
+            item["word"]
+            for item in chunk
+        ).strip()
+
+        words = chunk_text.split()
+
+        lines = []
+        line = ""
+
+        for word in words:
+
+            test_line = (
+                f"{line} {word}".strip()
             )
 
-            line = word + " "
+            if len(test_line) <= MAX_CHARS_PER_LINE:
 
-    lines.append(
-        line.strip()
-    )
+                line = test_line
 
-    lines = lines[-3:]
+            else:
 
-    y = VIDEO_SIZE[1] - 220
+                if line:
+                    lines.append(line)
 
-    for i, line_text in enumerate(lines):
+                line = word
 
-        bbox = draw.textbbox(
-            (0, 0),
-            line_text,
-            font=font
+        if line:
+            lines.append(line)
+
+        # Maximum 3 lines.
+        lines = lines[:MAX_LINES]
+
+        # ----------------------------------------------------
+        # Create transparent subtitle image
+        # ----------------------------------------------------
+
+        img = Image.new(
+            "RGBA",
+            VIDEO_SIZE,
+            (0, 0, 0, 0)
         )
 
-        width = (
-            bbox[2]
-            - bbox[0]
+        draw = ImageDraw.Draw(img)
+
+        try:
+
+            font = ImageFont.truetype(
+                "DejaVuSans-Bold.ttf",
+                FONT_SIZE
+            )
+
+        except:
+
+            font = ImageFont.load_default()
+
+        y = VIDEO_SIZE[1] - 220
+
+        for line_index, line_text in enumerate(lines):
+
+            bbox = draw.textbbox(
+                (0, 0),
+                line_text,
+                font=font
+            )
+
+            width = (
+                bbox[2]
+                - bbox[0]
+            )
+
+            draw.text(
+                (
+                    (VIDEO_SIZE[0] - width) // 2,
+                    y + line_index * 60
+                ),
+                line_text,
+                font=font,
+                fill=(255, 255, 0),
+                stroke_width=3,
+                stroke_fill=(0, 0, 0)
+            )
+
+        subtitle_clip = (
+            ImageClip(np.array(img))
+            .set_start(start_time)
+            .set_duration(
+                end_time - start_time
+            )
+            .set_position(
+                ("center", "bottom")
+            )
         )
 
-        draw.text(
-            (
-                (VIDEO_SIZE[0] - width) // 2,
-                y + i * 60
-            ),
-            line_text,
-            font=font,
-            fill=(255, 255, 0),
-            stroke_width=3,
-            stroke_fill=(0, 0, 0)
+        subtitle_clips.append(
+            subtitle_clip
         )
 
-    return ImageClip(
-        np.array(img)
+    # --------------------------------------------------------
+    # Final subtitle composition
+    # --------------------------------------------------------
+
+    if not subtitle_clips:
+
+        return ImageClip(
+            np.zeros(
+                (
+                    VIDEO_SIZE[1],
+                    VIDEO_SIZE[0],
+                    4
+                ),
+                dtype=np.uint8
+            )
+        ).set_duration(duration)
+
+    return CompositeVideoClip(
+        subtitle_clips,
+        size=VIDEO_SIZE
     ).set_duration(duration)
-
 
 # ============================================================
 # FULLSCREEN IMAGE CLIP
@@ -742,7 +1017,7 @@ def create_scene(
         f"audio/a_{index + 1}.mp3"
     )
 
-    voice = generate_voice(
+    voice, word_timings = generate_voice(
         text,
         audio_path
     )
@@ -790,7 +1065,8 @@ def create_scene(
 
     subtitle = create_subtitle(
         text,
-        duration
+        duration,
+        word_timings
     )
 
     final = CompositeVideoClip(
