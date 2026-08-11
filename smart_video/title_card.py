@@ -267,40 +267,106 @@ def _draw_3d_title(draw, center_x, y, text, font, fill):
     )
 
 
+def _normalize_title(title):
+    """
+    Clean a title before rendering.
+
+    Protects the title card from duplicated titles coming from MongoDB
+    or generated story data.
+
+    Examples:
+        "A B C A B C" -> "A B C"
+        "A B A B C"   -> "A B C"
+    """
+    title = clean_tts_text(title or "").strip()
+
+    if not title:
+        return "Untitled Story"
+
+    words = title.split()
+
+    # Remove exact duplicated halves:
+    # "लोमड़ी और लड़की ... लोमड़ी और लड़की ..."
+    if len(words) >= 4 and len(words) % 2 == 0:
+        half = len(words) // 2
+        if words[:half] == words[half:]:
+            words = words[:half]
+
+    # Remove immediate repeated phrase at the beginning:
+    # "A B C A B C D" -> "A B C D"
+    changed = True
+    while changed and len(words) >= 4:
+        changed = False
+
+        for phrase_len in range(
+            len(words) // 2,
+            1,
+            -1,
+        ):
+            if words[:phrase_len] == words[phrase_len:2 * phrase_len]:
+                words = words[phrase_len:]
+                changed = True
+                break
+
+    return " ".join(words).strip()
+
+
 def _split_title_for_design(title):
     """
-    The supplied design uses:
-        white first phrase
-        orange 'और'
-        orange second phrase
+    Split the cleaned title into the supplied poster design:
 
-    Preserve that design whenever the DB title contains 'और'.
+        first phrase -> white
+        "और"         -> orange
+        second phrase -> orange
 
-    For titles without 'और', split into at most two balanced lines.
+    The title is cleaned first so duplicated MongoDB/generated text
+    cannot appear twice on the title card.
     """
-    title = clean_tts_text(title)
+
+    title = _normalize_title(title)
 
     if "और" in title:
         before, after = title.split("और", 1)
+
+        before = before.strip()
+        after = after.strip()
+
+        # If the second part is still excessively long, balance it
+        # into a compact phrase instead of allowing it to overflow.
+        after_words = after.split()
+
+        if len(after_words) > 8:
+            # Keep the first part meaningful and shorten the visual
+            # title to a maximum of two lines after "और".
+            # The complete story title remains unchanged in MongoDB.
+            after = " ".join(after_words[:8])
+
         return (
-            before.strip(),
+            before,
             "और",
-            after.strip()
+            after,
         )
 
     words = title.split()
 
-    if len(words) <= 2:
-        return (title, "", "")
+    if len(words) <= 3:
+        return (
+            title,
+            "",
+            "",
+        )
 
-    midpoint = max(1, len(words) // 2)
+    # Balanced two-line title.
+    midpoint = max(
+        1,
+        len(words) // 2,
+    )
 
     return (
         " ".join(words[:midpoint]),
         "",
-        " ".join(words[midpoint:])
+        " ".join(words[midpoint:]),
     )
-
 
 def create_title_card(title, duration=TITLE_CARD_DURATION):
     """
@@ -309,7 +375,22 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
     Only the story title is dynamic and comes from MongoDB.
     Everything else remains based on the supplied design.
     """
-    title = clean_tts_text(title) or "Untitled Story"
+    original_title = clean_tts_text(title) or "Untitled Story"
+    title = _normalize_title(original_title)
+
+    if title != original_title:
+        print(
+            "⚠️ Duplicate/repeated title detected.",
+            flush=True,
+        )
+        print(
+            f"   Original: {original_title}",
+            flush=True,
+        )
+        print(
+            f"   Rendered: {title}",
+            flush=True,
+        )
 
     print(
         f"📖 Creating supplied-design opening title page: {title}",
