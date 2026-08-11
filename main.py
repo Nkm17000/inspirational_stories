@@ -11,6 +11,67 @@ from smart_video.db import (
 from smart_video.video_builder import build_video
 
 
+def export_story_to_github_actions(story_id, title):
+    """
+    Make the exact MongoDB story information available to later
+    GitHub Actions steps, especially facebook_upload.py.
+
+    This avoids querying MongoDB a second time just to get the title.
+    """
+
+    github_env = os.getenv("GITHUB_ENV")
+
+    if not github_env:
+        print(
+            "ℹ️ GITHUB_ENV is not available. "
+            "Story title will remain available in this process only.",
+            flush=True,
+        )
+        return
+
+    try:
+        # GitHub Actions multiline-safe environment format.
+        # UUID-style delimiter makes collisions with the title extremely
+        # unlikely.
+        delimiter = "STORY_VALUE_DELIMITER_9f3a7c"
+
+        with open(
+            github_env,
+            "a",
+            encoding="utf-8",
+        ) as env_file:
+
+            env_file.write(
+                f"STORY_ID<<{delimiter}\n"
+            )
+            env_file.write(
+                f"{story_id}\n"
+            )
+            env_file.write(
+                f"{delimiter}\n"
+            )
+
+            env_file.write(
+                f"STORY_TITLE<<{delimiter}\n"
+            )
+            env_file.write(
+                f"{title}\n"
+            )
+            env_file.write(
+                f"{delimiter}\n"
+            )
+
+        print(
+            "✅ Story ID and title exported to GitHub Actions",
+            flush=True,
+        )
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not export story information to GITHUB_ENV: {exc}"
+        ) from exc
+
+
 def main():
 
     print(
@@ -28,9 +89,6 @@ def main():
 
         story, scenes = get_story_from_mongodb()
 
-        # IMPORTANT:
-        # Do not silently return.
-        # GitHub Action must know that no story was processed.
         if not story:
 
             print(
@@ -56,10 +114,13 @@ def main():
             or "unknown"
         )
 
-        title = story.get(
-            "title",
-            "Untitled Story",
-        )
+        title = str(
+            story.get(
+                "title",
+                "Untitled Story",
+            )
+            or "Untitled Story"
+        ).strip()
 
         print(
             f"\n📖 TITLE: {title}",
@@ -74,6 +135,16 @@ def main():
         print(
             f"🎬 SCENES: {len(scenes)}",
             flush=True,
+        )
+
+        # ==================================================
+        # Pass the exact MongoDB title to later GitHub steps.
+        # Facebook upload will use this same title.
+        # ==================================================
+
+        export_story_to_github_actions(
+            story_id,
+            title,
         )
 
         # ==================================================
@@ -99,7 +170,7 @@ def main():
         )
 
         print(
-            f"\n🔎 Checking generated video:",
+            "\n🔎 Checking generated video:",
             flush=True,
         )
 
@@ -250,9 +321,6 @@ def main():
                     flush=True,
                 )
 
-        # IMPORTANT:
-        # Return non-zero so GitHub Actions knows
-        # that video generation failed.
         return 1
 
 

@@ -2,7 +2,12 @@
 
 import os
 import numpy as np
-from moviepy.editor import AudioFileClip, concatenate_videoclips, concatenate_audioclips, CompositeVideoClip
+
+from moviepy.editor import (
+    AudioFileClip,
+    CompositeVideoClip,
+    concatenate_audioclips,
+)
 from moviepy.audio.AudioClip import AudioArrayClip
 
 from .config import MIN_DURATION, VIDEO_SIZE
@@ -10,6 +15,164 @@ from .voice import clean_tts_text, generate_voice
 from .image_generator import generate_image
 from .branding import create_fullscreen_clip
 from .subtitles import create_subtitle
+
+
+# ============================================================
+# CINEMATIC IMAGE MOTION
+# ============================================================
+
+def _apply_ken_burns(
+    clip,
+    duration,
+    motion_index,
+):
+    """
+    Add subtle cinematic camera movement to a still image.
+
+    The source clip is first slightly enlarged and then slowly
+    moves/zooms during the scene.
+
+    Motion patterns alternate between scenes/images so the whole
+    video does not feel repetitive:
+
+        0 -> slow zoom in + slight left-to-right movement
+        1 -> slow zoom out + slight right-to-left movement
+        2 -> slow zoom in + slight right-to-left movement
+        3 -> slow zoom out + slight left-to-right movement
+
+    The clip is cropped back to VIDEO_SIZE, so no black bars appear.
+    """
+
+    width, height = VIDEO_SIZE
+
+    # Keep the movement subtle. Large movement makes AI-generated
+    # still images look unnatural.
+    zoom_start = 1.02
+    zoom_end = 1.08
+
+    pattern = motion_index % 4
+
+    if pattern == 0:
+        # Zoom in, move from left to right.
+        direction = 1
+        zoom_from = zoom_start
+        zoom_to = zoom_end
+
+    elif pattern == 1:
+        # Zoom out, move from right to left.
+        direction = -1
+        zoom_from = zoom_end
+        zoom_to = zoom_start
+
+    elif pattern == 2:
+        # Zoom in, move from right to left.
+        direction = -1
+        zoom_from = zoom_start
+        zoom_to = zoom_end
+
+    else:
+        # Zoom out, move from left to right.
+        direction = 1
+        zoom_from = zoom_end
+        zoom_to = zoom_start
+
+    # Resize dynamically over time.
+    animated = clip.resize(
+        lambda t: (
+            zoom_from
+            + (zoom_to - zoom_from)
+            * min(1.0, max(0.0, t / max(duration, 0.001)))
+        )
+    )
+
+    # After resizing, crop a VIDEO_SIZE window that moves slowly
+    # horizontally. This gives a real camera-pan feeling.
+    def crop_frame(get_frame, t):
+
+        frame = get_frame(t)
+
+        frame_h, frame_w = frame.shape[:2]
+
+        max_x = max(
+            0,
+            frame_w - width
+        )
+
+        max_y = max(
+            0,
+            frame_h - height
+        )
+
+        progress = min(
+            1.0,
+            max(
+                0.0,
+                t / max(duration, 0.001)
+            )
+        )
+
+        # Keep vertical movement very small.
+        vertical_progress = (
+            0.5
+            + 0.08 * np.sin(progress * np.pi)
+        )
+
+        if direction > 0:
+            horizontal_progress = progress
+        else:
+            horizontal_progress = 1.0 - progress
+
+        x = int(
+            max_x * horizontal_progress
+        )
+
+        y = int(
+            max_y * vertical_progress
+        )
+
+        x = max(
+            0,
+            min(x, max_x)
+        )
+
+        y = max(
+            0,
+            min(y, max_y)
+        )
+
+        cropped = frame[
+            y:y + height,
+            x:x + width
+        ]
+
+        # Safety fallback in case MoviePy/PIL rounding produces
+        # a frame that is one pixel smaller than VIDEO_SIZE.
+        if (
+            cropped.shape[0] != height
+            or cropped.shape[1] != width
+        ):
+            from PIL import Image
+
+            cropped = np.array(
+                Image.fromarray(
+                    cropped
+                ).resize(
+                    (width, height),
+                    Image.Resampling.LANCZOS
+                )
+            )
+
+        return cropped
+
+    animated = animated.fl(
+        crop_frame,
+        apply_to=["mask"] if animated.mask else []
+    )
+
+    return animated.set_duration(
+        duration
+    )
+
 
 # ============================================================
 # CREATE SCENE
@@ -38,7 +201,9 @@ def create_scene(
     # sub_image_prompts only controls which images are shown.
     # --------------------------------------------------------
 
-    text = clean_tts_text(scene["text"])
+    text = clean_tts_text(
+        scene["text"]
+    )
 
     if not text:
         raise ValueError(
@@ -46,7 +211,7 @@ def create_scene(
         )
 
     # --------------------------------------------------------
-    # New MongoDB structure:
+    # MongoDB structure:
     #
     # "sub_image_prompts": [
     #   {
@@ -55,13 +220,16 @@ def create_scene(
     #   },
     #   ...
     # ]
-    #
-    # We use image_prompt from every object.
-    # The sub-text is kept in MongoDB but the complete scene
-    # text remains the narration/voice for the scene.
     # --------------------------------------------------------
 
-    sub_image_prompts = scene["sub_image_prompts"]
+    sub_image_prompts = scene[
+        "sub_image_prompts"
+    ]
+
+    if not sub_image_prompts:
+        raise ValueError(
+            f"❌ Scene {scene_number} contains no image prompts"
+        )
 
     print(
         f"📝 Text: {text[:150]}...",
@@ -69,7 +237,8 @@ def create_scene(
     )
 
     print(
-        f"🎨 Sub-image prompts: {len(sub_image_prompts)}",
+        f"🎨 Sub-image prompts: "
+        f"{len(sub_image_prompts)}",
         flush=True
     )
 
@@ -77,22 +246,33 @@ def create_scene(
         sub_image_prompts,
         start=1
     ):
-        sub_text = item.get("text", "")
-        image_prompt = item["image_prompt"]
+
+        sub_text = item.get(
+            "text",
+            ""
+        )
+
+        image_prompt = item[
+            "image_prompt"
+        ]
 
         print(
-            f"   🖼️ Image {prompt_index}/{len(sub_image_prompts)}",
+            f"   🖼️ Image "
+            f"{prompt_index}/{len(sub_image_prompts)}",
             flush=True
         )
 
         if sub_text:
+
             print(
-                f"      📝 Sub-text: {sub_text[:100]}...",
+                f"      📝 Sub-text: "
+                f"{sub_text[:100]}...",
                 flush=True
             )
 
         print(
-            f"      🎨 Prompt: {image_prompt[:120]}...",
+            f"      🎨 Prompt: "
+            f"{image_prompt[:120]}...",
             flush=True
         )
 
@@ -111,14 +291,25 @@ def create_scene(
 
     audio = None
 
-    if voice and os.path.exists(audio_path):
+    if (
+        voice
+        and os.path.exists(audio_path)
+    ):
+
         try:
-            audio = AudioFileClip(audio_path)
+
+            audio = AudioFileClip(
+                audio_path
+            )
+
         except Exception as e:
+
             print(
-                f"⚠️ Generated audio could not be opened: {e}",
+                f"⚠️ Generated audio could "
+                f"not be opened: {e}",
                 flush=True
             )
+
             audio = None
 
     duration = max(
@@ -129,11 +320,13 @@ def create_scene(
     )
 
     print(
-        f"⏱️ Scene voice/video duration: {duration:.2f}s",
+        f"⏱️ Scene voice/video duration: "
+        f"{duration:.2f}s",
         flush=True
     )
 
     if word_timings:
+
         first_word = word_timings[0]
         last_word = word_timings[-1]
 
@@ -156,22 +349,34 @@ def create_scene(
     # --------------------------------------------------------
 
     image_clips = []
-    image_count = len(sub_image_prompts)
+
+    image_count = len(
+        sub_image_prompts
+    )
 
     print(
-        f"🖼️ Total images for scene: {image_count}",
+        f"🖼️ Total images for scene: "
+        f"{image_count}",
         flush=True
     )
+
+    # Short overlap between images.
+    # This creates a crossfade instead of a hard cut.
+    CROSSFADE_DURATION = 0.45
 
     for prompt_index, item in enumerate(
         sub_image_prompts,
         start=1
     ):
 
-        image_prompt = item["image_prompt"]
+        image_prompt = item[
+            "image_prompt"
+        ]
 
         img_path = (
-            f"images/s_{scene_number}_{prompt_index}.png"
+            f"images/"
+            f"s_{scene_number}_"
+            f"{prompt_index}.png"
         )
 
         print(
@@ -188,29 +393,18 @@ def create_scene(
 
         # ----------------------------------------------------
         # Equal timing distribution
-        #
-        # Example:
-        # Scene voice = 20 sec
-        # 2 images
-        #
-        # Image 1 = 0 -> 10 sec
-        # Image 2 = 10 -> 20 sec
-        #
-        # Example:
-        # Scene voice = 30 sec
-        # 3 images
-        #
-        # Image 1 = 0 -> 10 sec
-        # Image 2 = 10 -> 20 sec
-        # Image 3 = 20 -> 30 sec
         # ----------------------------------------------------
 
         start_time = (
-            duration * (prompt_index - 1) / image_count
+            duration
+            * (prompt_index - 1)
+            / image_count
         )
 
         end_time = (
-            duration * prompt_index / image_count
+            duration
+            * prompt_index
+            / image_count
         )
 
         image_duration = (
@@ -219,10 +413,15 @@ def create_scene(
 
         print(
             f"   ⏱️ Image {prompt_index}: "
-            f"{start_time:.2f}s -> {end_time:.2f}s "
+            f"{start_time:.2f}s -> "
+            f"{end_time:.2f}s "
             f"({image_duration:.2f}s)",
             flush=True
         )
+
+        # ----------------------------------------------------
+        # Create the normal fullscreen image clip first.
+        # ----------------------------------------------------
 
         image_clip = create_fullscreen_clip(
             img,
@@ -230,22 +429,63 @@ def create_scene(
             prompt_index
         )
 
+        # ----------------------------------------------------
+        # Add Ken Burns movement.
+        # ----------------------------------------------------
+
+        image_clip = _apply_ken_burns(
+            image_clip,
+            image_duration,
+            (
+                index * image_count
+                + prompt_index
+            )
+        )
+
+        # ----------------------------------------------------
+        # Crossfade between images.
+        #
+        # The first image starts normally.
+        # Every following image fades in over the previous image.
+        # ----------------------------------------------------
+
+        if prompt_index > 1:
+
+            fade_duration = min(
+                CROSSFADE_DURATION,
+                image_duration * 0.35
+            )
+
+            image_clip = image_clip.crossfadein(
+                fade_duration
+            )
+
         image_clips.append(
-            image_clip
+            (
+                start_time,
+                image_clip
+            )
         )
 
     # --------------------------------------------------------
-    # Join all images sequentially.
+    # Composite animated images.
     #
-    # No overlap.
-    # No black frame between images.
-    # Total image duration = complete voice duration.
+    # We intentionally DO NOT concatenate them.
+    #
+    # concatenate_videoclips() produces hard scene/image cuts.
+    # CompositeVideoClip allows the next image to overlap the
+    # previous one and create a smooth crossfade.
     # --------------------------------------------------------
 
-    base = concatenate_videoclips(
-        image_clips,
-        method="compose",
-        padding=0
+    base = CompositeVideoClip(
+        [
+            clip.set_start(start_time)
+            for start_time, clip
+            in image_clips
+        ],
+        size=VIDEO_SIZE
+    ).set_duration(
+        duration
     )
 
     # --------------------------------------------------------
@@ -263,12 +503,18 @@ def create_scene(
         subtitle_duration
     )
 
+    # --------------------------------------------------------
+    # Combine animated image + subtitles.
+    # --------------------------------------------------------
+
     final = CompositeVideoClip(
         [
             base,
             subtitle
         ],
         size=VIDEO_SIZE
+    ).set_duration(
+        duration
     )
 
     # --------------------------------------------------------
@@ -312,5 +558,12 @@ def create_scene(
         final = final.set_audio(
             audio
         )
+
+    print(
+        f"✅ Scene {scene_number} created "
+        f"with cinematic motion + "
+        f"{CROSSFADE_DURATION:.2f}s crossfade",
+        flush=True
+    )
 
     return final

@@ -56,7 +56,7 @@ END_CARD_DURATION = float(os.getenv("END_CARD_DURATION", "5"))
 
 # Opening title page.
 # The title is read directly from the MongoDB story document.
-TITLE_CARD_DURATION = float(os.getenv("TITLE_CARD_DURATION", "2"))
+TITLE_CARD_DURATION = float(os.getenv("TITLE_CARD_DURATION", "3"))
 
 # Exact title-page design/template supplied by you.
 # Put the supplied poster image in the repository with this name.

@@ -1,23 +1,19 @@
-"""
-Upload the generated video to a Facebook Page.
+"""Upload the generated video to a Facebook Page.
 
 Required environment variables:
-    FB_PAGE_ID
-    FB_PAGE_ACCESS_TOKEN
+FB_PAGE_ID
+FB_PAGE_ACCESS_TOKEN
 
 Optional environment variables:
-    FB_GRAPH_API_VERSION   default: v24.0
-    FB_VIDEO_PATH          default: final_video.mp4
-    FB_POST_TITLE          default: Smart Learning Lab - New Story
-    FB_POST_DESCRIPTION    default: generic description
-    MONGODB_URI             optional
-    STORY_ID                optional
+FB_GRAPH_API_VERSION   default: v24.0
+FB_VIDEO_PATH          default: final_video.mp4
+FB_POST_TITLE          default: Smart Learning Lab - New Story
+FB_POST_DESCRIPTION    optional fallback description
+MONGODB_URI             optional
+STORY_ID               optional
 
-If STORY_ID and MONGODB_URI are supplied, the script tries to read
-the story title from MongoDB and uses it as the Facebook video title.
-
-This script publishes a normal Facebook Page video using:
-    POST /{page_id}/videos
+The MongoDB story title is used both as the Facebook video title
+and at the beginning of the Facebook Reel caption.
 """
 
 import os
@@ -31,8 +27,15 @@ import requests
 # CONFIGURATION
 # ============================================================
 
-PAGE_ID = os.getenv("FB_PAGE_ID", "").strip()
-ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN", "").strip()
+PAGE_ID = os.getenv(
+    "FB_PAGE_ID",
+    ""
+).strip()
+
+ACCESS_TOKEN = os.getenv(
+    "FB_PAGE_ACCESS_TOKEN",
+    ""
+).strip()
 
 GRAPH_API_VERSION = os.getenv(
     "FB_GRAPH_API_VERSION",
@@ -51,10 +54,7 @@ DEFAULT_TITLE = os.getenv(
 
 DEFAULT_DESCRIPTION = os.getenv(
     "FB_POST_DESCRIPTION",
-    (
-        "Watch this inspiring story from Smart Learning Lab.\n\n"
-        "Follow our Facebook Page for more stories."
-    )
+    "Watch this inspiring story from Smart Learning Lab."
 ).strip()
 
 MONGODB_URI = os.getenv(
@@ -73,6 +73,7 @@ STORY_ID = os.getenv(
 # ============================================================
 
 def validate_configuration():
+
     if not PAGE_ID:
         raise RuntimeError(
             "FB_PAGE_ID is not configured."
@@ -83,7 +84,9 @@ def validate_configuration():
             "FB_PAGE_ACCESS_TOKEN is not configured."
         )
 
-    video_file = Path(VIDEO_PATH)
+    video_file = Path(
+        VIDEO_PATH
+    )
 
     if not video_file.exists():
         raise FileNotFoundError(
@@ -97,13 +100,12 @@ def validate_configuration():
 
 
 # ============================================================
-# OPTIONAL MONGODB STORY TITLE
+# MONGODB STORY TITLE
 # ============================================================
 
 def get_story_title_from_mongodb():
     """
-    Read the title for STORY_ID from MongoDB when both
-    MONGODB_URI and STORY_ID are available.
+    Read the title for STORY_ID from MongoDB.
 
     Returns None when MongoDB lookup is unavailable.
     """
@@ -112,6 +114,7 @@ def get_story_title_from_mongodb():
         return None
 
     try:
+
         from pymongo import MongoClient
 
         print(
@@ -125,10 +128,18 @@ def get_story_title_from_mongodb():
         )
 
         try:
-            client.admin.command("ping")
 
-            db = client["storydb"]
-            collection = db["story_scenes"]
+            client.admin.command(
+                "ping"
+            )
+
+            db = client[
+                "storydb"
+            ]
+
+            collection = db[
+                "story_scenes"
+            ]
 
             story = collection.find_one(
                 {
@@ -140,29 +151,40 @@ def get_story_title_from_mongodb():
             )
 
             if story:
-                title = story.get("title")
+
+                title = story.get(
+                    "title"
+                )
 
                 if title:
+
                     print(
-                        f"✅ MongoDB story title: {title}",
+                        f"✅ MongoDB story title: "
+                        f"{title}",
                         flush=True
                     )
 
-                    return str(title).strip()
+                    return str(
+                        title
+                    ).strip()
 
             print(
-                "⚠️ Story title was not found in MongoDB.",
+                "⚠️ Story title was not found "
+                "in MongoDB.",
                 flush=True
             )
 
             return None
 
         finally:
+
             client.close()
 
     except Exception as exc:
+
         print(
-            f"⚠️ MongoDB title lookup failed: {exc}",
+            f"⚠️ MongoDB title lookup failed: "
+            f"{exc}",
             flush=True
         )
 
@@ -170,16 +192,45 @@ def get_story_title_from_mongodb():
 
 
 # ============================================================
+# FACEBOOK REEL CAPTION
+# ============================================================
+
+def build_caption(title):
+    """
+    Build a concise Facebook Reel caption.
+
+    The story title is always placed first so users immediately
+    see the actual story being published.
+    """
+
+    caption = (
+        f"🦊 {title}\n\n"
+        "एक छोटी सी मदद कैसे दो जिंदगियां बदल देती है? ❤️\n"
+        "पूरी कहानी देखें और अंत तक जरूर रुकें। 🎬\n\n"
+        "❤️ Like  |  💬 Comment  |  🔔 Follow\n\n"
+        "#HindiStory #HindiReels #HeartTouchingStory "
+        "#InspiringStory #SmartLearningLab"
+    )
+
+    return caption.strip()
+
+
+# ============================================================
 # FACEBOOK UPLOAD
 # ============================================================
 
 def upload_video():
+
     validate_configuration()
 
-    video_file = Path(VIDEO_PATH)
+    video_file = Path(
+        VIDEO_PATH
+    )
 
-    # Try to use the actual story title.
-    story_title = get_story_title_from_mongodb()
+    # Get the actual story title.
+    story_title = (
+        get_story_title_from_mongodb()
+    )
 
     title = (
         story_title
@@ -187,11 +238,25 @@ def upload_video():
         else DEFAULT_TITLE
     )
 
-    description = DEFAULT_DESCRIPTION
-
-    # Facebook title should be a reasonable length.
+    # Keep Facebook video title within a reasonable length.
     if len(title) > 255:
-        title = title[:252] + "..."
+
+        title = (
+            title[:252]
+            + "..."
+        )
+
+    # Build concise Reel caption.
+    description = build_caption(
+        title
+    )
+
+    # Fallback only if somehow the generated caption is empty.
+    if not description:
+
+        description = (
+            DEFAULT_DESCRIPTION
+        )
 
     print(
         "==========================================",
@@ -225,12 +290,23 @@ def upload_video():
     )
 
     print(
-        f"Graph API    : {GRAPH_API_VERSION}",
+        f"Graph API    : "
+        f"{GRAPH_API_VERSION}",
         flush=True
     )
 
     print(
         f"Title        : {title}",
+        flush=True
+    )
+
+    print(
+        "Caption:",
+        flush=True
+    )
+
+    print(
+        description,
         flush=True
     )
 
@@ -255,7 +331,10 @@ def upload_video():
     }
 
     try:
-        with video_file.open("rb") as video:
+
+        with video_file.open(
+            "rb"
+        ) as video:
 
             response = requests.post(
                 endpoint,
@@ -274,17 +353,22 @@ def upload_video():
     except requests.RequestException as exc:
 
         raise RuntimeError(
-            f"Facebook upload request failed: {exc}"
+            f"Facebook upload request failed: "
+            f"{exc}"
         ) from exc
 
     print(
-        f"Facebook HTTP status: {response.status_code}",
+        f"Facebook HTTP status: "
+        f"{response.status_code}",
         flush=True
     )
 
     try:
+
         result = response.json()
+
     except ValueError:
+
         result = {
             "raw_response": response.text
         }
@@ -301,7 +385,9 @@ def upload_video():
             "Facebook video upload failed."
         )
 
-    video_id = result.get("id")
+    video_id = result.get(
+        "id"
+    )
 
     if not video_id:
 
@@ -317,7 +403,8 @@ def upload_video():
         )
 
         raise RuntimeError(
-            "Facebook upload did not return a video ID."
+            "Facebook upload did not return "
+            "a video ID."
         )
 
     print(
@@ -331,7 +418,8 @@ def upload_video():
     )
 
     print(
-        f"Facebook video ID: {video_id}",
+        f"Facebook video ID: "
+        f"{video_id}",
         flush=True
     )
 
@@ -350,12 +438,14 @@ def upload_video():
 if __name__ == "__main__":
 
     try:
+
         upload_video()
 
     except Exception as exc:
 
         print(
-            f"❌ Facebook upload failed: {exc}",
+            f"❌ Facebook upload failed: "
+            f"{exc}",
             flush=True
         )
 
