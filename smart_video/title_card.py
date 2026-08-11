@@ -1,0 +1,475 @@
+"""Opening title card using the supplied poster design.
+
+Only the title is dynamic. The title is read from the MongoDB story document.
+Place the supplied poster artwork at assets/title_page_template.png or set
+TITLE_TEMPLATE_PATH.
+"""
+
+import os
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
+from moviepy.editor import ImageClip
+
+from .config import VIDEO_SIZE, TITLE_TEMPLATE_PATH, TITLE_TEMPLATE_CROP, TITLE_CARD_DURATION
+from .fonts import find_devanagari_font
+from .voice import clean_tts_text
+from .branding import prepare_round_logo
+
+def _load_title_template():
+    """
+    Load the exact poster supplied by the user.
+
+    The supplied screenshot contains an outer white border and some
+    surrounding screenshot area. We crop it to the actual 9:16 poster
+    and then resize it to VIDEO_SIZE.
+    """
+    if not os.path.exists(TITLE_TEMPLATE_PATH):
+        print(
+            f"⚠️ Title template not found: {TITLE_TEMPLATE_PATH}",
+            flush=True
+        )
+        return None
+
+    try:
+        source = Image.open(TITLE_TEMPLATE_PATH).convert("RGB")
+
+        w, h = source.size
+
+        # Crop the outer white/screenshot border using normalized values.
+        left = int(w * TITLE_TEMPLATE_CROP[0])
+        top = int(h * TITLE_TEMPLATE_CROP[1])
+        right = int(w * TITLE_TEMPLATE_CROP[2])
+        bottom = int(h * TITLE_TEMPLATE_CROP[3])
+
+        if right <= left or bottom <= top:
+            raise ValueError("Invalid title template crop")
+
+        source = source.crop((left, top, right, bottom))
+
+        source = source.resize(
+            VIDEO_SIZE,
+            Image.Resampling.LANCZOS
+        )
+
+        return source
+
+    except Exception as e:
+        print(
+            f"⚠️ Could not load title template: {e}",
+            flush=True
+        )
+        return None
+
+
+def _cover_existing_title(img):
+    """
+    Remove the hard-coded title from the supplied poster.
+
+    The title region is replaced across the full width with a smooth
+    background gradient sampled from the original artwork. Because the
+    replacement spans the full width, there is no visible rectangular
+    "box" behind the dynamic title.
+    """
+    width, height = VIDEO_SIZE
+    pixels = np.array(img).astype(np.float32)
+
+    # Only the old title area is replaced.
+    # The logo, top ornament, subtitle plaque, mountains, wolf, hunter,
+    # book and bottom glow remain exactly from the supplied image.
+    y1 = int(height * 0.250)
+    y2 = int(height * 0.555)
+
+    replacement = pixels.copy()
+
+    def row_background(y):
+        # Avoid the original title in the center and sample the real
+        # background from the left/right edges.
+        left = pixels[y, :100]
+        right = pixels[y, width - 100:]
+
+        return np.median(
+            np.concatenate([left, right], axis=0),
+            axis=0
+        )
+
+    top_color = row_background(y1)
+    bottom_color = row_background(y2)
+
+    for y in range(y1, y2):
+        progress = (y - y1) / max(1, y2 - y1)
+
+        # Smooth vertical color transition.
+        color = (
+            top_color * (1.0 - progress)
+            + bottom_color * progress
+        )
+
+        replacement[y, :] = color
+
+    replacement = Image.fromarray(
+        np.uint8(np.clip(replacement, 0, 255)),
+        "RGB"
+    )
+
+    # Very small feather only at the top/bottom so the gradient blends
+    # naturally into the original poster.
+    mask = Image.new("L", (width, height), 0)
+
+    mask_draw = ImageDraw.Draw(mask)
+
+    mask_draw.rectangle(
+        (0, y1, width, y2),
+        fill=255
+    )
+
+    mask = mask.filter(
+        ImageFilter.GaussianBlur(2)
+    )
+
+    result = Image.composite(
+        replacement,
+        img,
+        mask
+    )
+
+    # Add a subtle warm glow in the center of the title area.
+    yy, xx = np.ogrid[:height, :width]
+
+    cx = width // 2
+    cy = int(height * 0.47)
+
+    distance = np.sqrt(
+        ((xx - cx) / (width * 0.48)) ** 2
+        + ((yy - cy) / (height * 0.22)) ** 2
+    )
+
+    alpha = np.clip(1.0 - distance, 0, 1) ** 4
+
+    glow_mask = Image.fromarray(
+        (alpha * 22).astype(np.uint8),
+        "L"
+    )
+
+    gold_layer = Image.new(
+        "RGBA",
+        (width, height),
+        (255, 150, 20, 0)
+    )
+
+    gold_layer.putalpha(glow_mask)
+
+    result = Image.alpha_composite(
+        result.convert("RGBA"),
+        gold_layer
+    ).convert("RGB")
+
+    return result
+
+
+def _fit_font_for_text(text, max_width, start_size, bold=True):
+    """Return the largest Devanagari font that fits max_width."""
+    for size in range(start_size, 20, -2):
+        font = find_devanagari_font(size, bold=bold)
+
+        bbox = ImageDraw.Draw(
+            Image.new("RGB", (10, 10))
+        ).textbbox(
+            (0, 0),
+            text,
+            font=font,
+            stroke_width=0
+        )
+
+        if (bbox[2] - bbox[0]) <= max_width:
+            return font
+
+    return find_devanagari_font(20, bold=bold)
+
+
+def _draw_3d_title(draw, center_x, y, text, font, fill):
+    """
+    Recreate the heavy 3D/shadow look of the supplied title artwork.
+    """
+    bbox = draw.textbbox(
+        (0, 0),
+        text,
+        font=font,
+        stroke_width=2
+    )
+
+    text_width = bbox[2] - bbox[0]
+    x = center_x - text_width // 2
+
+    # Deep black/brown shadow.
+    for offset in range(16, 5, -2):
+        draw.text(
+            (x + 2, y + offset),
+            text,
+            font=font,
+            fill=(25, 18, 12),
+            stroke_width=5,
+            stroke_fill=(8, 12, 18)
+        )
+
+    # Dark extrusion edge.
+    draw.text(
+        (x, y + 5),
+        text,
+        font=font,
+        fill=fill,
+        stroke_width=5,
+        stroke_fill=(55, 30, 8)
+    )
+
+    # Main face.
+    draw.text(
+        (x, y),
+        text,
+        font=font,
+        fill=fill,
+        stroke_width=2,
+        stroke_fill=(255, 235, 190) if fill[0] > 200 else (20, 20, 20)
+    )
+
+    # Small top highlight.
+    draw.text(
+        (x, y - 2),
+        text,
+        font=font,
+        fill=fill,
+        stroke_width=1,
+        stroke_fill=(255, 255, 255) if fill[0] > 200 else (120, 55, 0)
+    )
+
+
+def _split_title_for_design(title):
+    """
+    The supplied design uses:
+        white first phrase
+        orange 'और'
+        orange second phrase
+
+    Preserve that design whenever the DB title contains 'और'.
+
+    For titles without 'और', split into at most two balanced lines.
+    """
+    title = clean_tts_text(title)
+
+    if "और" in title:
+        before, after = title.split("और", 1)
+        return (
+            before.strip(),
+            "और",
+            after.strip()
+        )
+
+    words = title.split()
+
+    if len(words) <= 2:
+        return (title, "", "")
+
+    midpoint = max(1, len(words) // 2)
+
+    return (
+        " ".join(words[:midpoint]),
+        "",
+        " ".join(words[midpoint:])
+    )
+
+
+def create_title_card(title, duration=TITLE_CARD_DURATION):
+    """
+    Create the opening title page using the EXACT supplied poster artwork.
+
+    Only the story title is dynamic and comes from MongoDB.
+    Everything else remains based on the supplied design.
+    """
+    title = clean_tts_text(title) or "Untitled Story"
+
+    print(
+        f"📖 Creating supplied-design opening title page: {title}",
+        flush=True
+    )
+
+    template = _load_title_template()
+
+    if template is None:
+        # Safe fallback if the template image was not copied into the repo.
+        # This keeps the pipeline working instead of crashing.
+        print(
+            "⚠️ Falling back to generated title card because "
+            "the supplied template image is missing.",
+            flush=True
+        )
+
+        img = Image.new("RGB", VIDEO_SIZE, (7, 26, 51))
+        draw = ImageDraw.Draw(img)
+
+        for y in range(VIDEO_SIZE[1]):
+            ratio = y / max(1, VIDEO_SIZE[1] - 1)
+            draw.line(
+                (0, y, VIDEO_SIZE[0], y),
+                fill=(
+                    int(7 + 4 * ratio),
+                    int(26 + 18 * ratio),
+                    int(51 + 20 * ratio)
+                )
+            )
+
+        logo_path = prepare_round_logo()
+
+        if logo_path and os.path.exists(logo_path):
+            with Image.open(logo_path).convert("RGBA") as logo:
+                logo = logo.resize(
+                    (190, 190),
+                    Image.Resampling.LANCZOS
+                )
+                img.paste(
+                    logo,
+                    ((VIDEO_SIZE[0] - 190) // 2, 85),
+                    logo
+                )
+    else:
+        img = _cover_existing_title(template)
+
+    draw = ImageDraw.Draw(img)
+
+    width, height = VIDEO_SIZE
+    center_x = width // 2
+
+    # ------------------------------------------------------------
+    # Dynamic DB title
+    # ------------------------------------------------------------
+    first, middle, last = _split_title_for_design(title)
+
+    # Main title area is deliberately large, matching the reference.
+    # White first line.
+    if first:
+        first_font = _fit_font_for_text(
+            first,
+            int(width * 0.82),
+            125,
+            bold=True
+        )
+
+        first_bbox = draw.textbbox(
+            (0, 0),
+            first,
+            font=first_font
+        )
+
+        first_width = first_bbox[2] - first_bbox[0]
+
+        # If there are three parts, first line sits above "और".
+        if middle:
+            first_y = int(height * 0.285)
+        else:
+            first_y = int(height * 0.325)
+
+        _draw_3d_title(
+            draw,
+            center_x,
+            first_y,
+            first,
+            first_font,
+            (238, 238, 235)
+        )
+
+    # Orange "और".
+    if middle:
+        middle_font = _fit_font_for_text(
+            middle,
+            int(width * 0.35),
+            72,
+            bold=True
+        )
+
+        _draw_3d_title(
+            draw,
+            center_x,
+            int(height * 0.385),
+            middle,
+            middle_font,
+            (255, 143, 10)
+        )
+
+    # Orange second phrase.
+    if last:
+        last_font = _fit_font_for_text(
+            last,
+            int(width * 0.82),
+            125,
+            bold=True
+        )
+
+        if middle:
+            last_y = int(height * 0.435)
+        else:
+            last_y = int(height * 0.405)
+
+        _draw_3d_title(
+            draw,
+            center_x,
+            last_y,
+            last,
+            last_font,
+            (255, 157, 12)
+        )
+
+    # ------------------------------------------------------------
+    # Keep the subtitle plaque from the supplied design.
+    #
+    # It already exists in the template image, so we do NOT redraw it.
+    # This avoids the old "box" problem and preserves the exact artwork.
+    # ------------------------------------------------------------
+
+    # If the template was not used, create a simple matching plaque.
+    if template is None:
+        plaque_y = int(height * 0.60)
+
+        draw.rounded_rectangle(
+            (
+                int(width * 0.18),
+                plaque_y,
+                int(width * 0.82),
+                plaque_y + 62
+            ),
+            radius=28,
+            fill=(12, 19, 25),
+            outline=(235, 160, 25),
+            width=3
+        )
+
+        subtitle_font = find_devanagari_font(30, bold=False)
+
+        subtitle = "एक प्रेरणादायक कहानी"
+
+        bbox = draw.textbbox(
+            (0, 0),
+            subtitle,
+            font=subtitle_font
+        )
+
+        draw.text(
+            (
+                center_x - (bbox[2] - bbox[0]) // 2,
+                plaque_y + 12
+            ),
+            subtitle,
+            font=subtitle_font,
+            fill=(245, 245, 240)
+        )
+
+    path = "images/_title_card.png"
+
+    img.save(
+        path,
+        quality=95
+    )
+
+    print(
+        f"✅ Exact supplied-design title page created: {path}",
+        flush=True
+    )
+
+    return ImageClip(path).set_duration(duration)

@@ -1,0 +1,1 @@
+"""Smart Video Generator package."""
