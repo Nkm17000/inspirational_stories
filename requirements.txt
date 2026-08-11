@@ -9,4 +9,4 @@ imageio-ffmpeg
 proglog
 tqdm
 decorator
-groq
+pymongo[srv]
