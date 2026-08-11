@@ -47,8 +47,8 @@ def _apply_ken_burns(
 
     # Keep the movement subtle. Large movement makes AI-generated
     # still images look unnatural.
-    zoom_start = 1.02
-    zoom_end = 1.08
+    zoom_start = 1.025
+    zoom_end = 1.10
 
     pattern = motion_index % 4
 
@@ -360,9 +360,42 @@ def create_scene(
         flush=True
     )
 
-    # Short overlap between images.
-    # This creates a crossfade instead of a hard cut.
-    CROSSFADE_DURATION = 0.45
+    # --------------------------------------------------------
+    # Cinematic image transitions
+    # --------------------------------------------------------
+    #
+    # IMPORTANT:
+    # The old implementation started every image exactly when
+    # the previous image ended. A crossfade on a non-overlapping
+    # clip can expose transparent/black frames.
+    #
+    # We now create a REAL overlap:
+    #
+    # Image 1  --------------------
+    #                    \\
+    #                     \\ Image 2
+    #                      ----------------
+    #
+    # The next image starts CROSSFADE_DURATION before the current
+    # image ends. Therefore there is always an opaque image behind
+    # the incoming image.
+    # --------------------------------------------------------
+
+    CROSSFADE_DURATION = 0.35
+
+    # Slightly stronger than the previous 1.02 -> 1.08 motion,
+    # while still keeping the AI images natural.
+    # The actual zoom values are controlled inside _apply_ken_burns.
+    transition_duration = min(
+        CROSSFADE_DURATION,
+        max(0.15, duration / max(1, image_count) * 0.20)
+    )
+
+    # Base duration for each image. We deliberately keep the total
+    # visual duration equal to the narration duration.
+    base_image_duration = (
+        duration / image_count
+    )
 
     for prompt_index, item in enumerate(
         sub_image_prompts,
@@ -392,40 +425,54 @@ def create_scene(
         )
 
         # ----------------------------------------------------
-        # Equal timing distribution
+        # Real overlap timing.
+        #
+        # Image 1: 0.00 -> base duration
+        # Image 2: base-duration - overlap -> next duration
+        #
+        # The final image is extended enough to cover the complete
+        # narration duration.
         # ----------------------------------------------------
 
-        start_time = (
-            duration
-            * (prompt_index - 1)
-            / image_count
-        )
+        if prompt_index == 1:
+            start_time = 0.0
+        else:
+            start_time = (
+                (prompt_index - 1) * base_image_duration
+                - transition_duration
+            )
 
-        end_time = (
-            duration
-            * prompt_index
-            / image_count
-        )
+        if prompt_index < image_count:
+            clip_duration = (
+                base_image_duration
+                + transition_duration
+            )
+        else:
+            clip_duration = (
+                duration
+                - start_time
+            )
 
-        image_duration = (
-            end_time - start_time
+        clip_duration = max(
+            0.05,
+            clip_duration
         )
 
         print(
             f"   ⏱️ Image {prompt_index}: "
             f"{start_time:.2f}s -> "
-            f"{end_time:.2f}s "
-            f"({image_duration:.2f}s)",
+            f"{start_time + clip_duration:.2f}s "
+            f"({clip_duration:.2f}s)",
             flush=True
         )
 
         # ----------------------------------------------------
-        # Create the normal fullscreen image clip first.
+        # Create fullscreen image clip.
         # ----------------------------------------------------
 
         image_clip = create_fullscreen_clip(
             img,
-            image_duration,
+            clip_duration,
             prompt_index
         )
 
@@ -435,7 +482,7 @@ def create_scene(
 
         image_clip = _apply_ken_burns(
             image_clip,
-            image_duration,
+            clip_duration,
             (
                 index * image_count
                 + prompt_index
@@ -443,21 +490,16 @@ def create_scene(
         )
 
         # ----------------------------------------------------
-        # Crossfade between images.
+        # Real crossfade.
         #
-        # The first image starts normally.
-        # Every following image fades in over the previous image.
+        # The incoming clip is placed over the outgoing clip while
+        # both are visible. There is NO transparent gap.
         # ----------------------------------------------------
 
         if prompt_index > 1:
 
-            fade_duration = min(
-                CROSSFADE_DURATION,
-                image_duration * 0.35
-            )
-
             image_clip = image_clip.crossfadein(
-                fade_duration
+                transition_duration
             )
 
         image_clips.append(
@@ -470,11 +512,8 @@ def create_scene(
     # --------------------------------------------------------
     # Composite animated images.
     #
-    # We intentionally DO NOT concatenate them.
-    #
-    # concatenate_videoclips() produces hard scene/image cuts.
-    # CompositeVideoClip allows the next image to overlap the
-    # previous one and create a smooth crossfade.
+    # Each image overlaps the previous image by
+    # transition_duration. This removes the black blink.
     # --------------------------------------------------------
 
     base = CompositeVideoClip(
@@ -562,7 +601,7 @@ def create_scene(
     print(
         f"✅ Scene {scene_number} created "
         f"with cinematic motion + "
-        f"{CROSSFADE_DURATION:.2f}s crossfade",
+        f"{transition_duration:.2f}s real overlap crossfade",
         flush=True
     )
 
