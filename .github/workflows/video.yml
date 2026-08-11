@@ -21,6 +21,18 @@ jobs:
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
+      # --------------------------------------------------
+      # Final Like / Subscribe page
+      # Change this to your actual page
+      # --------------------------------------------------
+      CTA_URL: "https://www.facebook.com/thesmartlearninglab"
+
+      # Optional logo configuration
+      LOGO_PATH: "logo.png"
+      LOGO_SIZE: "125"
+      LOGO_MARGIN: "18"
+      END_CARD_DURATION: "5"
+
     steps:
 
       # --------------------------------------------------
@@ -74,6 +86,20 @@ jobs:
           find /usr/share/fonts -iname "*Devanagari*" | head -20
 
       # --------------------------------------------------
+      # Verify logo
+      # --------------------------------------------------
+      - name: Verify Smart Learning Lab logo
+        run: |
+          if [ -f "logo.png" ]; then
+            echo "✅ logo.png found"
+            ls -lh logo.png
+          else
+            echo "❌ logo.png NOT found"
+            echo "The video generator requires logo.png in the repository root."
+            exit 1
+          fi
+
+      # --------------------------------------------------
       # Install Python dependencies
       # --------------------------------------------------
       - name: Install dependencies
@@ -81,12 +107,27 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+          # Required for final QR-code CTA page
+          python -m pip install qrcode
+
       # --------------------------------------------------
       # Verify Edge TTS
       # --------------------------------------------------
       - name: Verify Edge TTS
         run: |
           edge-tts --version
+
+      # --------------------------------------------------
+      # Verify QR code package
+      # --------------------------------------------------
+      - name: Verify QR Code
+        run: |
+          python - <<'PY'
+          import qrcode
+
+          print("✅ qrcode package installed")
+          print("qrcode version:", getattr(qrcode, "__version__", "installed"))
+          PY
 
       # --------------------------------------------------
       # Test Hindi TTS
@@ -163,11 +204,42 @@ jobs:
           fi
 
       # --------------------------------------------------
+      # Validate CTA URL
+      # --------------------------------------------------
+      - name: Validate CTA URL
+        run: |
+          if [ -z "$CTA_URL" ]; then
+            echo "❌ CTA_URL is EMPTY"
+            exit 1
+          else
+            echo "✅ CTA_URL configured"
+            echo "CTA page: $CTA_URL"
+          fi
+
+      # --------------------------------------------------
       # Run video generator
       # --------------------------------------------------
       - name: Run Video Generator
         run: |
           python script.py
+
+      # --------------------------------------------------
+      # Verify generated video
+      # --------------------------------------------------
+      - name: Verify generated video
+        run: |
+          if [ ! -f "final_video.mp4" ]; then
+            echo "❌ final_video.mp4 was not generated"
+            exit 1
+          fi
+
+          if [ ! -s "final_video.mp4" ]; then
+            echo "❌ final_video.mp4 is empty"
+            exit 1
+          fi
+
+          echo "✅ Video generated successfully"
+          ls -lh final_video.mp4
 
       # --------------------------------------------------
       # Upload generated video
@@ -180,7 +252,7 @@ jobs:
           if-no-files-found: error
 
       # --------------------------------------------------
-      # Upload audio and images for debugging
+      # Upload generated assets for debugging
       # --------------------------------------------------
       - name: Upload generated assets
         uses: actions/upload-artifact@v4

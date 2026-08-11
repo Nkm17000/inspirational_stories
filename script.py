@@ -1,6 +1,5 @@
-
 # Required packages:
-# pip install -U edge-tts pymongo requests numpy nest-asyncio pillow moviepy
+# pip install -U edge-tts pymongo requests numpy nest-asyncio pillow moviepy qrcode
 #
 # For Hindi subtitles on Linux/GitHub Actions:
 # sudo apt-get update
@@ -15,8 +14,9 @@ import asyncio
 import edge_tts
 import nest_asyncio
 import unicodedata
+from datetime import datetime, timezone
 
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import ConnectionFailure
 
 from moviepy.editor import *
@@ -39,6 +39,20 @@ nest_asyncio.apply()
 VIDEO_SIZE = (720, 1280)
 FPS = 24
 MIN_DURATION = 5
+
+# ============================================================
+# BRANDING / FINAL CTA
+# ============================================================
+
+# Keep logo.png beside script.py.
+LOGO_PATH = os.getenv("LOGO_PATH", "logo.png")
+LOGO_SIZE = int(os.getenv("LOGO_SIZE", "125"))
+LOGO_MARGIN = int(os.getenv("LOGO_MARGIN", "18"))
+
+# Final Like / Subscribe / Learn More page.
+# Change CTA_URL to your real Smart Learning Lab page.
+CTA_URL = os.getenv("CTA_URL", "https://example.com")
+END_CARD_DURATION = float(os.getenv("END_CARD_DURATION", "5"))
 
 # MongoDB
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -120,138 +134,166 @@ def get_mongodb_collection():
 
 
 # ============================================================
+# MONGODB STATUS HELPERS
+# ============================================================
+
+def update_story_status(story, status, extra_fields=None, retries=3):
+    """
+    Reliably update and VERIFY the MongoDB status.
+
+    The primary key is the document's _id. This avoids failures caused
+    by a missing/different story_id field name. story_id/id/ID are also
+    supported for compatibility with existing documents.
+    """
+    if not story:
+        print("⚠️ Cannot update MongoDB status: story document is missing", flush=True)
+        return False
+
+    mongo_id = story.get("_id")
+    story_id = (
+        story.get("story_id")
+        or story.get("id")
+        or story.get("ID")
+        or "unknown"
+    )
+
+    fields = {
+        "status": status,
+        "updated_at": datetime.now(timezone.utc)
+    }
+
+    if extra_fields:
+        fields.update(extra_fields)
+
+    if status == "COMPLETED":
+        fields["story_id"] = story_id
+
+    for attempt in range(1, retries + 1):
+        client = None
+        try:
+            client, collection = get_mongodb_collection()
+
+            if mongo_id is not None:
+                query = {"_id": mongo_id}
+            else:
+                # Compatibility fallback for documents without _id in
+                # an unusual test/mock collection.
+                query = {
+                    "$or": [
+                        {"story_id": story_id},
+                        {"id": story_id},
+                        {"ID": story_id}
+                    ]
+                }
+
+            result = collection.update_one(
+                query,
+                {"$set": fields}
+            )
+
+            current = collection.find_one(
+                query,
+                {"status": 1, "story_id": 1, "id": 1, "ID": 1}
+            )
+
+            actual_status = current.get("status") if current else None
+
+            if actual_status == status:
+                print(
+                    f"✅ MongoDB status verified: {story_id} -> {status} "
+                    f"(matched={result.matched_count}, "
+                    f"modified={result.modified_count})",
+                    flush=True
+                )
+                return True
+
+            print(
+                f"⚠️ MongoDB verification attempt "
+                f"{attempt}/{retries}: expected={status}, "
+                f"actual={actual_status}, story={story_id}",
+                flush=True
+            )
+
+        except Exception as e:
+            print(
+                f"⚠️ MongoDB status update attempt "
+                f"{attempt}/{retries} failed: {e}",
+                flush=True
+            )
+        finally:
+            if client:
+                client.close()
+
+        if attempt < retries:
+            time.sleep(2 * attempt)
+
+    return False
+
+
+# ============================================================
 # GET STORY FROM MONGODB
 # ============================================================
 
 def get_story_from_mongodb():
-
+    """Atomically claim exactly one PENDING story."""
     client, collection = get_mongodb_collection()
 
     try:
-
-        # ----------------------------------------------------
-        # Get specific story
-        # ----------------------------------------------------
-
         if STORY_ID:
-
-            print(
-                f"🔎 Searching story_id: {STORY_ID}",
-                flush=True
-            )
-
-            story = collection.find_one({
-                "story_id": STORY_ID
-            })
-
-        # ----------------------------------------------------
-        # Otherwise get first story
-        # ----------------------------------------------------
-
+            print(f"🔎 Requested STORY_ID: {STORY_ID}", flush=True)
+            query = {"story_id": STORY_ID, "status": "PENDING"}
         else:
+            print("🔎 STORY_ID not provided.", flush=True)
+            print("📖 Searching for next PENDING story...", flush=True)
+            query = {"status": "PENDING"}
 
-            print(
-                "🔎 STORY_ID not provided.",
-                flush=True
-            )
-
-            print(
-                "📖 Getting first story from MongoDB...",
-                flush=True
-            )
-
-            story = collection.find_one({})
-
-        # ----------------------------------------------------
-        # Story not found
-        # ----------------------------------------------------
+        story = collection.find_one_and_update(
+            query,
+            {"$set": {"status": "PROCESSING"}},
+            sort=[("created_at", 1), ("story_id", 1)],
+            return_document=ReturnDocument.AFTER
+        )
 
         if not story:
+            print("ℹ️ No PENDING story available.", flush=True)
+            return None, []
 
-            raise ValueError(
-                "❌ No story found in MongoDB"
-            )
+        title = story.get("title", "Untitled Story")
+        story_id = (story.get("story_id") or story.get("id") or story.get("ID") or "unknown")
 
-        # ----------------------------------------------------
-        # Read title directly from MongoDB
-        # ----------------------------------------------------
+        print("✅ Story claimed successfully", flush=True)
+        print(f"🆔 Story ID: {story_id}", flush=True)
+        print(f"📖 Title: {title}", flush=True)
+        print("🔄 Status: PROCESSING", flush=True)
 
-        title = story.get(
-            "title",
-            "Untitled Story"
-        )
-
-        story_id = story.get(
-            "story_id",
-            "unknown"
-        )
-
-        print(
-            f"\n📖 Story ID: {story_id}",
-            flush=True
-        )
-
-        print(
-            f"📖 Title: {title}",
-            flush=True
-        )
-
-        # ----------------------------------------------------
-        # Get scenes
-        # ----------------------------------------------------
-
-        scenes = story.get(
-            "scenes",
-            []
-        )
+        scenes = story.get("scenes", [])
 
         if not scenes:
-
-            raise ValueError(
-                "❌ Story contains no scenes"
+            collection.update_one(
+                {"_id": story["_id"], "status": "PROCESSING"},
+                {"$set": {"status": "FAILED", "last_error": "Story contains no scenes"}}
             )
+            raise ValueError("❌ Story contains no scenes")
 
-        print(
-            f"🎬 Total scenes: {len(scenes)}",
-            flush=True
-        )
-
-        # ----------------------------------------------------
-        # Validate scenes
-        # ----------------------------------------------------
+        print(f"🎬 Total scenes: {len(scenes)}", flush=True)
 
         valid_scenes = []
 
         for scene in scenes:
-
             text = scene.get("text")
             sub_image_prompts = scene.get("sub_image_prompts")
 
             if not text:
-                print(
-                    "⚠️ Scene skipped: missing text",
-                    flush=True
-                )
+                print("⚠️ Scene skipped: missing text", flush=True)
                 continue
 
-            # New MongoDB schema:
-            # sub_image_prompts: [
-            #   {
-            #     "text": "...",
-            #     "image_prompt": "..."
-            #   }
-            # ]
             if not isinstance(sub_image_prompts, list) or not sub_image_prompts:
-                print(
-                    "⚠️ Scene skipped: missing sub_image_prompts array",
-                    flush=True
-                )
+                print("⚠️ Scene skipped: missing sub_image_prompts array", flush=True)
                 continue
 
             valid_sub_prompts = []
 
             for sub_index, item in enumerate(sub_image_prompts, start=1):
-
                 if not isinstance(item, dict):
                     print(
                         f"⚠️ Scene {scene.get('scene_number', '?')}: "
@@ -279,7 +321,7 @@ def get_story_from_mongodb():
             if not valid_sub_prompts:
                 print(
                     f"⚠️ Scene {scene.get('scene_number', '?')}: "
-                    f"no valid sub-image prompts",
+                    "no valid sub-image prompts",
                     flush=True
                 )
                 continue
@@ -294,20 +336,16 @@ def get_story_from_mongodb():
             })
 
         if not valid_scenes:
-
-            raise ValueError(
-                "❌ No valid scenes found"
+            collection.update_one(
+                {"_id": story["_id"], "status": "PROCESSING"},
+                {"$set": {"status": "FAILED", "last_error": "No valid scenes found"}}
             )
+            raise ValueError("❌ No valid scenes found")
 
-        print(
-            f"✅ Valid scenes: {len(valid_scenes)}",
-            flush=True
-        )
-
+        print(f"✅ Valid scenes: {len(valid_scenes)}", flush=True)
         return story, valid_scenes
 
     finally:
-
         client.close()
 
 
@@ -1120,47 +1158,137 @@ def create_subtitle(text, duration, word_timings=None):
 # FULLSCREEN IMAGE CLIP
 # ============================================================
 
+def prepare_round_logo():
+    """Create a transparent circular version of logo.png."""
+    if not os.path.exists(LOGO_PATH):
+        print(
+            f"⚠️ Logo not found at '{LOGO_PATH}'. "
+            "Video will continue without branding.",
+            flush=True
+        )
+        return None
+
+    output_path = os.path.join("images", "_round_logo.png")
+
+    try:
+        if os.path.exists(output_path):
+            if os.path.getmtime(output_path) >= os.path.getmtime(LOGO_PATH):
+                return output_path
+
+        with Image.open(LOGO_PATH).convert("RGBA") as source:
+            source.thumbnail(
+                (LOGO_SIZE, LOGO_SIZE),
+                Image.Resampling.LANCZOS
+            )
+
+            canvas = Image.new(
+                "RGBA",
+                (LOGO_SIZE, LOGO_SIZE),
+                (0, 0, 0, 0)
+            )
+
+            x = (LOGO_SIZE - source.width) // 2
+            y = (LOGO_SIZE - source.height) // 2
+            canvas.alpha_composite(source, (x, y))
+
+            # Make the logo genuinely round.
+            mask = Image.new(
+                "L",
+                (LOGO_SIZE, LOGO_SIZE),
+                0
+            )
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse(
+                (0, 0, LOGO_SIZE - 1, LOGO_SIZE - 1),
+                fill=255
+            )
+            canvas.putalpha(mask)
+
+            canvas.save(output_path, "PNG")
+
+        print(
+            f"✅ Circular logo prepared: {output_path}",
+            flush=True
+        )
+        return output_path
+
+    except Exception as e:
+        print(f"⚠️ Could not prepare logo: {e}", flush=True)
+        return None
+
+
+ROUND_LOGO_PATH = None
+
+
 def create_fullscreen_clip(
     image_path,
     duration,
     index
 ):
+    """
+    Create the image clip and put the circular logo at the top-left.
+
+    The logo is part of every individual image clip, therefore it stays
+    visible for the full duration of every image.
+    """
+    global ROUND_LOGO_PATH
 
     if image_path is None:
-
-        return ColorClip(
+        base_clip = ColorClip(
             VIDEO_SIZE,
             color=(0, 0, 0)
         ).set_duration(duration)
-
-    clip = ImageClip(
-        image_path
-    )
-
-    clip = clip.resize(
-        height=VIDEO_SIZE[1]
-    )
-
-    if clip.w < VIDEO_SIZE[0]:
+    else:
+        clip = ImageClip(image_path)
 
         clip = clip.resize(
-            width=VIDEO_SIZE[0]
+            height=VIDEO_SIZE[1]
         )
 
-    clip = clip.crop(
-        x_center=clip.w / 2,
-        y_center=clip.h / 2,
-        width=VIDEO_SIZE[0],
-        height=VIDEO_SIZE[1]
-    )
+        if clip.w < VIDEO_SIZE[0]:
+            clip = clip.resize(
+                width=VIDEO_SIZE[0]
+            )
 
-    clip = clip.set_duration(
-        duration
-    )
+        clip = clip.crop(
+            x_center=clip.w / 2,
+            y_center=clip.h / 2,
+            width=VIDEO_SIZE[0],
+            height=VIDEO_SIZE[1]
+        )
 
-    # Do not fade each sub-image to black. The image should
-    # remain visible for its complete allocated duration.
-    return clip
+        base_clip = clip.set_duration(duration)
+
+    if ROUND_LOGO_PATH is None:
+        ROUND_LOGO_PATH = prepare_round_logo()
+
+    if not ROUND_LOGO_PATH or not os.path.exists(ROUND_LOGO_PATH):
+        return base_clip
+
+    try:
+        logo_clip = (
+            ImageClip(ROUND_LOGO_PATH)
+            .resize(width=LOGO_SIZE)
+            .set_position((LOGO_MARGIN, LOGO_MARGIN))
+            .set_duration(duration)
+        )
+
+        result = CompositeVideoClip(
+            [base_clip, logo_clip],
+            size=VIDEO_SIZE
+        ).set_duration(duration)
+
+        print(
+            f"   🏷️ Logo added to image {index} "
+            f"at top-left ({LOGO_MARGIN}, {LOGO_MARGIN})",
+            flush=True
+        )
+
+        return result
+
+    except Exception as e:
+        print(f"⚠️ Logo overlay failed: {e}", flush=True)
+        return base_clip
 
 
 # ============================================================
@@ -1469,43 +1597,191 @@ def create_scene(
 
 
 # ============================================================
+# FINAL LIKE / SUBSCRIBE / CTA CARD
+# ============================================================
+
+def create_end_card(duration=END_CARD_DURATION):
+    """
+    Create a final Like/Subscribe page.
+
+    MP4 video files do not provide a universally supported clickable
+    hotspot. The URL is therefore displayed and, when qrcode is
+    installed, a QR code is included. YouTube/Facebook clickable
+    links should be configured using their own platform features.
+    """
+    width, height = VIDEO_SIZE
+
+    img = Image.new(
+        "RGB",
+        (width, height),
+        (8, 18, 35)
+    )
+
+    draw = ImageDraw.Draw(img)
+
+    title_font = get_unicode_font(48, bold=True)
+    subtitle_font = get_unicode_font(34, bold=True)
+    url_font = get_unicode_font(25, bold=False)
+
+    # Logo on final card too.
+    logo_path = prepare_round_logo()
+    if logo_path and os.path.exists(logo_path):
+        try:
+            with Image.open(logo_path).convert("RGBA") as logo:
+                logo = logo.resize(
+                    (LOGO_SIZE, LOGO_SIZE),
+                    Image.Resampling.LANCZOS
+                )
+                img.paste(
+                    logo,
+                    (LOGO_MARGIN, LOGO_MARGIN),
+                    logo
+                )
+        except Exception as e:
+            print(f"⚠️ End-card logo failed: {e}", flush=True)
+
+    def centered(text_value, font, y, fill=(255, 255, 255)):
+        bbox = draw.textbbox(
+            (0, 0),
+            text_value,
+            font=font
+        )
+        w = bbox[2] - bbox[0]
+        x = (width - w) // 2
+
+        draw.text(
+            (x, y),
+            text_value,
+            font=font,
+            fill=fill,
+            stroke_width=2,
+            stroke_fill=(0, 0, 0)
+        )
+
+    centered(
+        "LIKE • SUBSCRIBE • SHARE",
+        title_font,
+        410
+    )
+
+    centered(
+        "SMART LEARNING LAB",
+        subtitle_font,
+        500
+    )
+
+    qr_created = False
+
+    try:
+        import qrcode
+
+        qr = qrcode.QRCode(
+            version=3,
+            box_size=6,
+            border=2
+        )
+        qr.add_data(CTA_URL)
+        qr.make(fit=True)
+
+        qr_img = qr.make_image(
+            fill_color="black",
+            back_color="white"
+        ).convert("RGB")
+
+        qr_size = 260
+        qr_img.thumbnail(
+            (qr_size, qr_size),
+            Image.Resampling.LANCZOS
+        )
+
+        qr_x = (width - qr_img.width) // 2
+        qr_y = 590
+
+        img.paste(
+            qr_img,
+            (qr_x, qr_y)
+        )
+
+        qr_created = True
+
+        centered(
+            "SCAN TO VISIT",
+            url_font,
+            qr_y + qr_img.height + 20
+        )
+
+    except Exception as e:
+        print(
+            f"ℹ️ QR code unavailable: {e}. "
+            "The URL will still be displayed.",
+            flush=True
+        )
+
+    url_text = CTA_URL
+    if len(url_text) > 42:
+        url_text = url_text[:39] + "..."
+
+    url_y = 925 if qr_created else 650
+
+    centered(
+        url_text,
+        url_font,
+        url_y,
+        fill=(255, 200, 50)
+    )
+
+    centered(
+        "Learn Smarter. Grow Faster.",
+        subtitle_font,
+        1040
+    )
+
+    path = "images/_end_card.png"
+    img.save(path)
+
+    return ImageClip(path).set_duration(duration)
+
+
+# ============================================================
 # BUILD VIDEO
 # ============================================================
 
 def build_video(
     scenes
 ):
-
     clips = []
 
     for i, scene in enumerate(scenes):
-
         clip = create_scene(
             scene,
             i
         )
-
-        if i > 0:
-
-            clip = clip.crossfadein(
-                1.0
-            )
-
         clips.append(clip)
 
     if not clips:
-
         raise ValueError(
             "❌ No video clips generated"
         )
 
-    # Keep scene audio/subtitle timelines aligned.
-    # Do not overlap complete scenes because that can overlap
-    # audio while subtitles remain on their own scene timeline.
+    # Add final Like / Subscribe / CTA page.
+    print(
+        f"\n📣 Adding final Like/Subscribe page: {CTA_URL}",
+        flush=True
+    )
+
+    clips.append(
+        create_end_card(END_CARD_DURATION)
+    )
+
     final = concatenate_videoclips(
         clips,
         method="compose",
         padding=0
+    )
+
+    print(
+        f"🎬 Final video duration: {final.duration:.2f}s",
+        flush=True
     )
 
     final.write_videofile(
@@ -1515,6 +1791,17 @@ def build_video(
         audio_codec="aac",
         threads=2
     )
+
+    try:
+        final.close()
+    except Exception:
+        pass
+
+    for clip in clips:
+        try:
+            clip.close()
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -1528,40 +1815,117 @@ if __name__ == "__main__":
         flush=True
     )
 
-    # --------------------------------------------------------
-    # Get everything from MongoDB
-    # --------------------------------------------------------
+    story = None
 
-    story, scenes = get_story_from_mongodb()
+    try:
 
-    # --------------------------------------------------------
-    # Title also comes from MongoDB
-    # --------------------------------------------------------
+        # Atomically claim exactly ONE PENDING story.
+        story, scenes = get_story_from_mongodb()
 
-    title = story.get(
-        "title",
-        "Untitled Story"
-    )
+        if not story:
+            print(
+                "ℹ️ Nothing to process. All stories may already be completed.",
+                flush=True
+            )
+            raise SystemExit(0)
 
-    print(
-        f"\n📖 TITLE: {title}",
-        flush=True
-    )
+        story_id = story.get("story_id", "unknown")
+        title = story.get("title", "Untitled Story")
 
-    print(
-        f"🎬 SCENES: {len(scenes)}",
-        flush=True
-    )
+        print(f"\n📖 TITLE: {title}", flush=True)
+        print(f"🆔 STORY ID: {story_id}", flush=True)
+        print(f"🎬 SCENES: {len(scenes)}", flush=True)
 
-    # --------------------------------------------------------
-    # Build video
-    # --------------------------------------------------------
+        # Build video.
+        build_video(scenes)
 
-    build_video(
-        scenes
-    )
+        # Only mark COMPLETED after the final MP4 is successfully written.
+        if not os.path.exists("final_video.mp4"):
+            raise RuntimeError(
+                "❌ Video generation finished but final_video.mp4 was not created"
+            )
 
-    print(
-        "\n✅ Video generation completed!",
-        flush=True
-    )
+        video_size = os.path.getsize("final_video.mp4")
+
+        if video_size == 0:
+            raise RuntimeError(
+                "❌ final_video.mp4 is empty"
+            )
+
+        print(
+            f"✅ final_video.mp4 created successfully "
+            f"({video_size / (1024 * 1024):.2f} MB)",
+            flush=True
+        )
+
+        # IMPORTANT:
+        # Update MongoDB status only.
+        # The generated video is NOT stored in MongoDB.
+        # Only processing metadata/status is saved.
+        status_updated = update_story_status(
+            story,
+            "COMPLETED",
+            {
+                "completed_at": datetime.now(timezone.utc),
+                "last_error": None
+            }
+        )
+
+        if not status_updated:
+            raise RuntimeError(
+                f"❌ Video was created, but MongoDB status could not be "
+                f"verified as COMPLETED for story {story_id}"
+            )
+
+        print(
+            f"\n✅ Story {story_id} marked COMPLETED and verified in MongoDB",
+            flush=True
+        )
+
+        print(
+            "\n✅ Video generation completed!",
+            flush=True
+        )
+
+    except SystemExit:
+        raise
+
+    except Exception as e:
+
+        print(
+            f"\n❌ Video generation failed: {e}",
+            flush=True
+        )
+
+        # Explicitly mark the story FAILED and save the error.
+        # This prevents a story from being left indefinitely in PROCESSING.
+        if story:
+            failed_story_id = (
+                story.get("story_id")
+                or story.get("id")
+                or story.get("ID")
+                or "unknown"
+            )
+
+            status_updated = update_story_status(
+                story,
+                "FAILED",
+                {
+                    "last_error": str(e),
+                    "failed_at": datetime.now(timezone.utc)
+                }
+            )
+
+            if status_updated:
+                print(
+                    f"🔴 Story {failed_story_id} marked FAILED in MongoDB",
+                    flush=True
+                )
+            else:
+                print(
+                    f"❌ Could not mark story {failed_story_id} as FAILED",
+                    flush=True
+                )
+
+        raise
+
