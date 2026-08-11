@@ -1,45 +1,163 @@
 """Application entry point for the Smart Video Generator."""
 
 import os
+import sys
 from datetime import datetime, timezone
 
-from smart_video.config import MONGODB_URI
-from smart_video.db import get_story_from_mongodb, update_story_status
+from smart_video.db import (
+    get_story_from_mongodb,
+    update_story_status,
+)
 from smart_video.video_builder import build_video
 
 
 def main():
-    print("🚀 Starting SmartStudyLab video generator...", flush=True)
+
+    print(
+        "🚀 Starting SmartStudyLab video generator...",
+        flush=True,
+    )
+
     story = None
 
     try:
+
+        # ==================================================
+        # Get next story from MongoDB
+        # ==================================================
+
         story, scenes = get_story_from_mongodb()
 
+        # IMPORTANT:
+        # Do not silently return.
+        # GitHub Action must know that no story was processed.
         if not story:
-            print("ℹ️ Nothing to process. All stories may already be completed.", flush=True)
-            return
 
-        story_id = story.get("story_id", "unknown")
-        title = story.get("title", "Untitled Story")
+            print(
+                "❌ No PENDING story was found in MongoDB.",
+                flush=True,
+            )
 
-        print(f"\n📖 TITLE: {title}", flush=True)
-        print(f"🆔 STORY ID: {story_id}", flush=True)
-        print(f"🎬 SCENES: {len(scenes)}", flush=True)
+            print(
+                "ℹ️ No video was generated.",
+                flush=True,
+            )
 
-        # The title is taken directly from MongoDB.
-        build_video(scenes, title)
+            return 2
 
-        output_path = "final_video.mp4"
-        if not os.path.exists(output_path):
-            raise RuntimeError("❌ Video generation finished but final_video.mp4 was not created")
+        # ==================================================
+        # Story information
+        # ==================================================
 
-        video_size = os.path.getsize(output_path)
-        if video_size == 0:
-            raise RuntimeError("❌ final_video.mp4 is empty")
+        story_id = (
+            story.get("story_id")
+            or story.get("id")
+            or story.get("ID")
+            or "unknown"
+        )
+
+        title = story.get(
+            "title",
+            "Untitled Story",
+        )
 
         print(
-            f"✅ final_video.mp4 created successfully "
-            f"({video_size / (1024 * 1024):.2f} MB)",
+            f"\n📖 TITLE: {title}",
+            flush=True,
+        )
+
+        print(
+            f"🆔 STORY ID: {story_id}",
+            flush=True,
+        )
+
+        print(
+            f"🎬 SCENES: {len(scenes)}",
+            flush=True,
+        )
+
+        # ==================================================
+        # Generate video
+        # ==================================================
+
+        print(
+            "\n🎬 Starting video generation...",
+            flush=True,
+        )
+
+        build_video(
+            scenes,
+            title,
+        )
+
+        # ==================================================
+        # Verify generated video
+        # ==================================================
+
+        output_path = os.path.abspath(
+            "final_video.mp4"
+        )
+
+        print(
+            f"\n🔎 Checking generated video:",
+            flush=True,
+        )
+
+        print(
+            f"📁 {output_path}",
+            flush=True,
+        )
+
+        if not os.path.isfile(output_path):
+
+            raise RuntimeError(
+                "Video generation completed without creating "
+                f"final_video.mp4 at {output_path}"
+            )
+
+        video_size = os.path.getsize(
+            output_path
+        )
+
+        if video_size <= 0:
+
+            raise RuntimeError(
+                "final_video.mp4 was created but is empty"
+            )
+
+        print(
+            "\n==========================================",
+            flush=True,
+        )
+
+        print(
+            "✅ FINAL VIDEO CREATED",
+            flush=True,
+        )
+
+        print(
+            f"📁 Path: {output_path}",
+            flush=True,
+        )
+
+        print(
+            f"📦 Size: "
+            f"{video_size / (1024 * 1024):.2f} MB",
+            flush=True,
+        )
+
+        print(
+            "==========================================",
+            flush=True,
+        )
+
+        # ==================================================
+        # Mark story COMPLETED
+        # ==================================================
+
+        print(
+            f"\n🔄 Updating MongoDB status for "
+            f"{story_id}...",
             flush=True,
         )
 
@@ -47,24 +165,47 @@ def main():
             story,
             "COMPLETED",
             {
-                "completed_at": datetime.now(timezone.utc),
+                "completed_at": datetime.now(
+                    timezone.utc
+                ),
                 "last_error": None,
             },
         )
 
         if not status_updated:
+
             raise RuntimeError(
-                f"❌ Video was created, but MongoDB status could not be "
-                f"verified as COMPLETED for story {story_id}"
+                "Video was successfully created, but "
+                f"MongoDB status could not be verified "
+                f"as COMPLETED for story {story_id}"
             )
 
-        print(f"\n✅ Story {story_id} marked COMPLETED and verified in MongoDB", flush=True)
-        print("\n✅ Video generation completed!", flush=True)
+        print(
+            f"✅ Story {story_id} marked COMPLETED "
+            f"and verified in MongoDB",
+            flush=True,
+        )
+
+        print(
+            "\n✅ Video generation completed successfully!",
+            flush=True,
+        )
+
+        return 0
 
     except Exception as e:
-        print(f"\n❌ Video generation failed: {e}", flush=True)
+
+        print(
+            f"\n❌ Video generation failed: {e}",
+            flush=True,
+        )
+
+        # ==================================================
+        # Mark story FAILED
+        # ==================================================
 
         if story:
+
             failed_story_id = (
                 story.get("story_id")
                 or story.get("id")
@@ -72,22 +213,51 @@ def main():
                 or "unknown"
             )
 
-            status_updated = update_story_status(
-                story,
-                "FAILED",
-                {
-                    "last_error": str(e),
-                    "failed_at": datetime.now(timezone.utc),
-                },
-            )
+            try:
 
-            if status_updated:
-                print(f"🔴 Story {failed_story_id} marked FAILED in MongoDB", flush=True)
-            else:
-                print(f"❌ Could not mark story {failed_story_id} as FAILED", flush=True)
+                status_updated = update_story_status(
+                    story,
+                    "FAILED",
+                    {
+                        "last_error": str(e),
+                        "failed_at": datetime.now(
+                            timezone.utc
+                        ),
+                    },
+                )
 
-        raise
+                if status_updated:
+
+                    print(
+                        f"🔴 Story {failed_story_id} "
+                        f"marked FAILED in MongoDB",
+                        flush=True,
+                    )
+
+                else:
+
+                    print(
+                        f"❌ Could not mark story "
+                        f"{failed_story_id} as FAILED",
+                        flush=True,
+                    )
+
+            except Exception as db_error:
+
+                print(
+                    f"❌ MongoDB status update failed: "
+                    f"{db_error}",
+                    flush=True,
+                )
+
+        # IMPORTANT:
+        # Return non-zero so GitHub Actions knows
+        # that video generation failed.
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+
+    exit_code = main()
+
+    sys.exit(exit_code)
