@@ -18,49 +18,64 @@ jobs:
       contents: read
 
     env:
+      # --------------------------------------------------
+      # MongoDB / API
+      # --------------------------------------------------
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
       # --------------------------------------------------
       # Final Like / Subscribe page
-      # Change this to your actual page
       # --------------------------------------------------
       CTA_URL: "https://www.facebook.com/thesmartlearninglab"
 
-      # Optional logo configuration
+      # --------------------------------------------------
+      # Logo configuration
+      # --------------------------------------------------
       LOGO_PATH: "logo.png"
       LOGO_SIZE: "125"
       LOGO_MARGIN: "18"
+
+      # --------------------------------------------------
+      # Video configuration
+      # --------------------------------------------------
       END_CARD_DURATION: "5"
+      TITLE_CARD_DURATION: "4"
+
+      # --------------------------------------------------
+      # IMPORTANT:
+      # Supplied title-page design
+      # --------------------------------------------------
+      TITLE_TEMPLATE_PATH: "assets/title_page_template.png"
 
     steps:
 
-      # --------------------------------------------------
-      # Checkout code
-      # --------------------------------------------------
+      # ==================================================
+      # Checkout
+      # ==================================================
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
+      # ==================================================
       # Setup Python
-      # --------------------------------------------------
+      # ==================================================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: "pip"
 
-      # --------------------------------------------------
+      # ==================================================
       # Verify Python
-      # --------------------------------------------------
+      # ==================================================
       - name: Verify Python
         run: |
           python --version
           python -m pip --version
 
-      # --------------------------------------------------
+      # ==================================================
       # Install system dependencies
-      # --------------------------------------------------
+      # ==================================================
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -68,70 +83,135 @@ jobs:
           sudo apt-get install -y \
             ffmpeg \
             fonts-noto-core \
-            fonts-noto-extra
+            fonts-noto-extra \
+            fontconfig
 
           fc-cache -f -v
 
-      # --------------------------------------------------
+      # ==================================================
       # Verify Hindi fonts
-      # --------------------------------------------------
+      # ==================================================
       - name: Verify Hindi fonts
         run: |
-          echo "Checking Devanagari fonts..."
+          echo "=========================================="
+          echo "Checking Devanagari fonts"
+          echo "=========================================="
 
-          fc-list :lang=hi family file | head -20
+          fc-list :lang=hi family file | head -30
 
-          echo "Checking Noto Devanagari fonts..."
+          echo ""
+          echo "Noto Devanagari fonts:"
+          find /usr/share/fonts \
+            -iname "*Devanagari*" \
+            | head -30
 
-          find /usr/share/fonts -iname "*Devanagari*" | head -20
+      # ==================================================
+      # Verify project structure
+      # ==================================================
+      - name: Verify project structure
+        run: |
+          echo "=========================================="
+          echo "Project structure"
+          echo "=========================================="
 
-      # --------------------------------------------------
+          echo ""
+          echo "Root files:"
+          ls -lah
+
+          echo ""
+          echo "smart_video package:"
+          ls -lah smart_video
+
+          echo ""
+          echo "Assets:"
+          ls -lah assets || true
+
+      # ==================================================
       # Verify logo
-      # --------------------------------------------------
+      # ==================================================
       - name: Verify Smart Learning Lab logo
         run: |
-          if [ -f "logo.png" ]; then
+          if [ -f "$LOGO_PATH" ]; then
             echo "✅ logo.png found"
-            ls -lh logo.png
+            ls -lh "$LOGO_PATH"
           else
             echo "❌ logo.png NOT found"
-            echo "The video generator requires logo.png in the repository root."
+            echo ""
+            echo "The video generator requires:"
+            echo "  logo.png"
+            echo ""
+            echo "Place logo.png in the repository root."
             exit 1
           fi
 
-      # --------------------------------------------------
+      # ==================================================
+      # Verify title-page template
+      # ==================================================
+      - name: Verify title page template
+        run: |
+          echo "Checking title page template..."
+
+          if [ -f "$TITLE_TEMPLATE_PATH" ]; then
+            echo "✅ Title page template found"
+            ls -lh "$TITLE_TEMPLATE_PATH"
+          else
+            echo "❌ Title page template NOT found"
+            echo ""
+            echo "Expected file:"
+            echo "  $TITLE_TEMPLATE_PATH"
+            echo ""
+            echo "Please put your supplied title-page image at:"
+            echo "  assets/title_page_template.png"
+            exit 1
+          fi
+
+      # ==================================================
       # Install Python dependencies
-      # --------------------------------------------------
+      # ==================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-          # Required for final QR-code CTA page
-          python -m pip install qrcode
+      # ==================================================
+      # Verify Python packages
+      # ==================================================
+      - name: Verify Python packages
+        run: |
+          python - <<'PY'
+          import edge_tts
+          import pymongo
+          import requests
+          import numpy
+          import nest_asyncio
+          import PIL
+          import moviepy
+          import qrcode
 
-      # --------------------------------------------------
+          print("==========================================")
+          print("Python packages verified")
+          print("==========================================")
+
+          print("edge_tts      :", "OK")
+          print("pymongo       :", "OK")
+          print("requests      :", "OK")
+          print("numpy         :", "OK")
+          print("nest_asyncio  :", "OK")
+          print("Pillow        :", "OK")
+          print("moviepy       :", moviepy.__version__)
+          print("qrcode        :", "OK")
+          PY
+
+      # ==================================================
       # Verify Edge TTS
-      # --------------------------------------------------
+      # ==================================================
       - name: Verify Edge TTS
         run: |
           edge-tts --version
 
-      # --------------------------------------------------
-      # Verify QR code package
-      # --------------------------------------------------
-      - name: Verify QR Code
-        run: |
-          python - <<'PY'
-          import qrcode
-
-          print("✅ qrcode package installed")
-          print("qrcode version:", getattr(qrcode, "__version__", "installed"))
-          PY
-
-      # --------------------------------------------------
+      # ==================================================
       # Test Hindi TTS
-      # --------------------------------------------------
+      # ==================================================
       - name: Test Hindi TTS
         run: |
           python - <<'PY'
@@ -154,9 +234,11 @@ jobs:
           print("✅ Hindi TTS test completed successfully")
           PY
 
-      # --------------------------------------------------
+          ls -lh test_hindi.mp3
+
+      # ==================================================
       # Test English TTS
-      # --------------------------------------------------
+      # ==================================================
       - name: Test English TTS
         run: |
           python - <<'PY'
@@ -179,9 +261,11 @@ jobs:
           print("✅ English TTS test completed successfully")
           PY
 
-      # --------------------------------------------------
-      # Validate MongoDB connection string
-      # --------------------------------------------------
+          ls -lh test_english.mp3
+
+      # ==================================================
+      # Validate MongoDB URI
+      # ==================================================
       - name: Validate MongoDB URI
         run: |
           if [ -z "$MONGODB_URI" ]; then
@@ -191,21 +275,22 @@ jobs:
             echo "✅ MONGODB_URI is configured"
           fi
 
-      # --------------------------------------------------
+      # ==================================================
       # Validate Groq API key
-      # --------------------------------------------------
+      # ==================================================
       - name: Validate Groq API key
         run: |
           if [ -z "$GROQ_API_KEY" ]; then
-            echo "❌ GROQ_API_KEY is EMPTY"
-            exit 1
+            echo "⚠️ GROQ_API_KEY is EMPTY"
+            echo "The current video generation script does not directly"
+            echo "require Groq during video rendering."
           else
             echo "✅ GROQ_API_KEY is configured"
           fi
 
-      # --------------------------------------------------
+      # ==================================================
       # Validate CTA URL
-      # --------------------------------------------------
+      # ==================================================
       - name: Validate CTA URL
         run: |
           if [ -z "$CTA_URL" ]; then
@@ -216,18 +301,65 @@ jobs:
             echo "CTA page: $CTA_URL"
           fi
 
-      # --------------------------------------------------
-      # Run video generator
-      # --------------------------------------------------
+      # ==================================================
+      # Validate title template configuration
+      # ==================================================
+      - name: Validate title page configuration
+        run: |
+          echo "TITLE_TEMPLATE_PATH=$TITLE_TEMPLATE_PATH"
+          echo "TITLE_CARD_DURATION=$TITLE_CARD_DURATION"
+
+          if [ ! -f "$TITLE_TEMPLATE_PATH" ]; then
+            echo "❌ Title template does not exist"
+            exit 1
+          fi
+
+          echo "✅ Title page configuration valid"
+
+      # ==================================================
+      # Python syntax validation
+      # ==================================================
+      - name: Validate Python source
+        run: |
+          echo "Checking Python syntax..."
+
+          python -m py_compile main.py
+
+          for file in smart_video/*.py; do
+            echo "Checking $file"
+            python -m py_compile "$file"
+          done
+
+          echo "✅ All Python files passed syntax validation"
+
+      # ==================================================
+      # Run modular video generator
+      # ==================================================
       - name: Run Video Generator
         run: |
-          python script.py
+          echo "=========================================="
+          echo "Starting Smart Video Generator"
+          echo "=========================================="
 
-      # --------------------------------------------------
+          echo ""
+          echo "Title template:"
+          echo "$TITLE_TEMPLATE_PATH"
+
+          echo ""
+          echo "Running:"
+          echo "python main.py"
+
+          python main.py
+
+      # ==================================================
       # Verify generated video
-      # --------------------------------------------------
+      # ==================================================
       - name: Verify generated video
         run: |
+          echo "=========================================="
+          echo "Checking generated video"
+          echo "=========================================="
+
           if [ ! -f "final_video.mp4" ]; then
             echo "❌ final_video.mp4 was not generated"
             exit 1
@@ -239,21 +371,31 @@ jobs:
           fi
 
           echo "✅ Video generated successfully"
+
           ls -lh final_video.mp4
 
-      # --------------------------------------------------
+          echo ""
+          echo "Video information:"
+          ffprobe \
+            -v error \
+            -show_entries format=duration,size \
+            -of default=noprint_wrappers=1 \
+            final_video.mp4 || true
+
+      # ==================================================
       # Upload generated video
-      # --------------------------------------------------
+      # ==================================================
       - name: Upload video
         uses: actions/upload-artifact@v4
         with:
           name: generated-video
           path: final_video.mp4
           if-no-files-found: error
+          retention-days: 7
 
-      # --------------------------------------------------
-      # Upload generated assets for debugging
-      # --------------------------------------------------
+      # ==================================================
+      # Upload generated assets
+      # ==================================================
       - name: Upload generated assets
         uses: actions/upload-artifact@v4
         with:
@@ -264,3 +406,4 @@ jobs:
             test_hindi.mp3
             test_english.mp3
           if-no-files-found: warn
+          retention-days: 7
