@@ -1,12 +1,13 @@
 """Build the final MP4 from title card, scenes, and CTA card."""
 
 import os
-from moviepy.editor import concatenate_videoclips
+from moviepy.editor import concatenate_videoclips, vfx
 
 from .config import FPS, CTA_URL, END_CARD_DURATION, TITLE_CARD_DURATION
 from .title_card import create_title_card
 from .scene import create_scene
 from .end_card import create_end_card
+
 
 # ============================================================
 # BUILD VIDEO
@@ -20,7 +21,7 @@ def build_video(
 
     # Add MongoDB story title page FIRST.
     print(
-        f"\\n📖 Adding opening title page: {title}",
+        f"\n📖 Adding opening title page: {title}",
         flush=True
     )
 
@@ -60,8 +61,15 @@ def build_video(
         padding=0
     )
 
+    # ========================================================
+    # SPEED UP FINAL VIDEO BY 15%
+    # ========================================================
+    # 1.15x speed = approximately 15% faster playback.
+    # Video and audio are sped up together to maintain sync.
+    final = final.fx(vfx.speedx, 1.15)
+
     print(
-        f"🎬 Final video duration: {final.duration:.2f}s",
+        f"🎬 Final video duration (1.15x): {final.duration:.2f}s",
         flush=True
     )
 
