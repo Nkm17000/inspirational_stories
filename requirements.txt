@@ -5,3 +5,4 @@ requests
 numpy
 edge-tts
 nest-asyncio
+qrcode[pil]
