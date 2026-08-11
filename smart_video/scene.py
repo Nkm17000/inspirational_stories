@@ -23,60 +23,79 @@ from .subtitles import create_subtitle
 
 def _apply_ken_burns(
     clip,
-    duration,
-    movement_index,
+    clip_duration,
+    scene_start_time,
+    scene_duration,
 ):
     """
-    Apply a smooth cinematic camera move.
+    Apply a continuous cinematic camera move.
 
-    V4 behavior:
-      - Every image moves LEFT -> RIGHT.
-      - No alternating left/right movement.
-      - Movement is slow and continuous.
-      - Zoom is extremely subtle so the image feels like a
-        camera shot rather than a slideshow.
-      - The direction remains consistent from image 1 -> image 3.
+    V5 design goal:
+      - The camera NEVER reverses direction at an image boundary.
+      - Zoom and horizontal drift are based on the GLOBAL scene time,
+        not the individual image time.
+      - This prevents the visible "forward -> backward" reset that
+        makes a slideshow feel mechanical.
+      - Motion is deliberately subtle: the viewer should feel that
+        the camera is slowly moving through one continuous shot.
     """
 
-    if duration <= 0:
+    if clip_duration <= 0 or scene_duration <= 0:
         return clip
 
-    # Very subtle cinematic push-in.
-    zoom_start = 1.02
-    zoom_end = 1.075
+    from PIL import Image
 
-    # Keep the same left-to-right direction for every image.
-    # The image is positioned slightly left at the beginning and
-    # gradually moves toward the right side.
-    pan_amount = 0.035
+    # Very restrained camera movement.
+    # The scale is continuous across the whole scene.
+    ZOOM_START = 1.035
+    ZOOM_END = 1.085
 
-    def ease_in_out(t):
-        """
-        Smoothstep easing:
-        slow start -> smooth middle -> slow finish.
-        """
+    # Only a small fraction of the available crop is traversed.
+    # This is intentionally much smaller than a typical Ken Burns effect.
+    PAN_START = 0.16
+    PAN_END = 0.84
+
+    def smoothstep(t):
         t = max(0.0, min(1.0, t))
         return t * t * (3.0 - 2.0 * t)
 
-    def transform(get_frame, t):
-        frame = get_frame(t)
+    def transform(get_frame, local_t):
+        frame = get_frame(local_t)
 
         h, w = frame.shape[:2]
 
+        # IMPORTANT:
+        # Convert local clip time to GLOBAL scene time.
+        #
+        # Example with 3 images:
+        # image 1 -> progress 0.00 -> ~0.33
+        # image 2 -> progress ~0.33 -> ~0.66
+        # image 3 -> progress ~0.66 -> 1.00
+        #
+        # Therefore the camera never jumps back to the beginning
+        # when a new image appears.
+        global_time = scene_start_time + local_t
+
         progress = (
-            t / duration
-            if duration > 0
+            global_time / scene_duration
+            if scene_duration > 0
             else 1.0
         )
 
-        eased = ease_in_out(progress)
-
-        zoom = (
-            zoom_start
-            + (zoom_end - zoom_start) * eased
+        progress = max(
+            0.0,
+            min(1.0, progress)
         )
 
-        # Scale around the center first.
+        eased = smoothstep(progress)
+
+        zoom = (
+            ZOOM_START
+            + (
+                ZOOM_END - ZOOM_START
+            ) * eased
+        )
+
         new_w = max(
             w,
             int(w * zoom)
@@ -87,8 +106,6 @@ def _apply_ken_burns(
             int(h * zoom)
         )
 
-        from PIL import Image
-
         pil = Image.fromarray(
             frame.astype("uint8")
         )
@@ -98,11 +115,8 @@ def _apply_ken_burns(
             Image.Resampling.LANCZOS
         )
 
-        arr = np.array(pil)
+        arr = np.asarray(pil)
 
-        # Left -> right camera travel.
-        # At the beginning we show a little more of the left side;
-        # by the end we reveal a little more of the right side.
         max_x = max(
             0,
             new_w - w
@@ -113,34 +127,34 @@ def _apply_ken_burns(
             new_h - h
         )
 
-        # Use only a small portion of the available horizontal travel.
-        x = int(
-            max_x * (
-                0.10
-                + pan_amount * 10.0 * eased
-            )
+        # Continuous LEFT -> RIGHT camera travel.
+        #
+        # Every image uses the SAME global camera position.
+        # This is the key fix for the backward jump.
+        pan_progress = (
+            PAN_START
+            + (
+                PAN_END - PAN_START
+            ) * eased
         )
 
-        # Keep vertical movement almost completely stable.
-        # This makes the shot feel like a horizontal camera slide.
+        x = int(
+            max_x * pan_progress
+        )
+
+        # Keep vertical framing stable.
         y = int(
             max_y * 0.50
         )
 
         x = max(
             0,
-            min(
-                x,
-                max_x
-            )
+            min(x, max_x)
         )
 
         y = max(
             0,
-            min(
-                y,
-                max_y
-            )
+            min(y, max_y)
         )
 
         cropped = arr[
@@ -148,14 +162,11 @@ def _apply_ken_burns(
             x:x + w
         ]
 
-        # Safety fallback in case rounding produces a smaller frame.
         if (
             cropped.shape[0] != h
             or cropped.shape[1] != w
         ):
-            from PIL import Image
-
-            cropped = np.array(
+            cropped = np.asarray(
                 Image.fromarray(
                     cropped.astype("uint8")
                 ).resize(
@@ -166,9 +177,7 @@ def _apply_ken_burns(
 
         return cropped.astype("uint8")
 
-    return clip.fl_image(
-        lambda frame: frame
-    ).fl(
+    return clip.fl(
         lambda gf, t: transform(gf, t)
     )
 
@@ -413,7 +422,7 @@ def create_scene(
     # the incoming image.
     # --------------------------------------------------------
 
-    CROSSFADE_DURATION = 0.45
+    CROSSFADE_DURATION = 0.55
 
     base_image_duration = (
         duration / image_count
@@ -556,10 +565,8 @@ def create_scene(
         image_clip = _apply_ken_burns(
             image_clip,
             clip_duration,
-            (
-                index * image_count
-                + prompt_index
-            )
+            start_time,
+            duration,
         )
 
         # ----------------------------------------------------
@@ -674,7 +681,7 @@ def create_scene(
 
     print(
         f"✅ Scene {scene_number} created "
-        f"with smooth left-to-right cinematic motion + "
+        f"with continuous cinematic camera motion + "
         f"{transition_duration:.2f}s movie-style dissolve",
         flush=True
     )

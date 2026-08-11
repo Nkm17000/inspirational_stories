@@ -205,7 +205,6 @@ def build_caption(title):
 
     caption = (
         f"🦊 {title}\n\n"
-        "एक छोटी सी मदद कैसे दो जिंदगियां बदल देती है? ❤️\n"
         "पूरी कहानी देखें और अंत तक जरूर रुकें। 🎬\n\n"
         "❤️ Like  |  💬 Comment  |  🔔 Follow\n\n"
         "#HindiStory #HindiReels #HeartTouchingStory "
