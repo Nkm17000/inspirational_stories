@@ -51,7 +51,7 @@ LOGO_MARGIN = int(os.getenv("LOGO_MARGIN", "18"))
 
 # Final Like / Subscribe / Learn More page.
 # Change CTA_URL to your real Smart Learning Lab page.
-CTA_URL = os.getenv("CTA_URL", "https://example.com")
+CTA_URL = os.getenv("CTA_URL", "https://www.facebook.com/thesmartlearninglab")
 END_CARD_DURATION = float(os.getenv("END_CARD_DURATION", "5"))
 
 # MongoDB
@@ -1597,48 +1597,101 @@ def create_scene(
 
 
 # ============================================================
-# FINAL LIKE / SUBSCRIBE / CTA CARD
+# FINAL SMART LEARNING LAB LIKE / SUBSCRIBE PAGE
 # ============================================================
 
 def create_end_card(duration=END_CARD_DURATION):
     """
-    Create a final Like/Subscribe page.
+    Render the Smart Learning Lab CTA page as the final video frame.
 
-    MP4 video files do not provide a universally supported clickable
-    hotspot. The URL is therefore displayed and, when qrcode is
-    installed, a QR code is included. YouTube/Facebook clickable
-    links should be configured using their own platform features.
+    The supplied HTML page is a web page, so it cannot itself be embedded
+    as a live clickable HTML element inside an MP4. This function recreates
+    the same CTA design as a video card and adds a scannable QR code.
     """
+
     width, height = VIDEO_SIZE
 
-    img = Image.new(
-        "RGB",
-        (width, height),
-        (8, 18, 35)
-    )
-
+    # Background similar to the supplied Smart Learning Lab HTML page.
+    img = Image.new("RGB", (width, height), (7, 26, 51))
     draw = ImageDraw.Draw(img)
 
-    title_font = get_unicode_font(48, bold=True)
-    subtitle_font = get_unicode_font(34, bold=True)
-    url_font = get_unicode_font(25, bold=False)
+    # Simple layered background gradients/glows.
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+        r = int(7 + 4 * ratio)
+        g = int(26 + 18 * ratio)
+        b = int(51 + 20 * ratio)
+        draw.line((0, y, width, y), fill=(r, g, b))
 
-    # Logo on final card too.
+    # Decorative glow circles.
+    try:
+        glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow)
+        glow_draw.ellipse(
+            (-180, -180, 350, 350),
+            fill=(0, 123, 255, 45)
+        )
+        glow_draw.ellipse(
+            (width - 330, height - 330, width + 180, height + 180),
+            fill=(255, 165, 0, 45)
+        )
+        img = Image.alpha_composite(img.convert("RGBA"), glow).convert("RGB")
+        draw = ImageDraw.Draw(img)
+    except Exception:
+        pass
+
+    # Card.
+    card_margin = 35
+    card_top = 45
+    card_bottom = height - 45
+    draw.rounded_rectangle(
+        (
+            card_margin,
+            card_top,
+            width - card_margin,
+            card_bottom
+        ),
+        radius=35,
+        fill=(24, 47, 72),
+        outline=(90, 120, 150),
+        width=2
+    )
+
+    # Fonts.
+    title_font = get_unicode_font(42, bold=True)
+    tagline_font = get_unicode_font(24, bold=False)
+    message_font = get_unicode_font(25, bold=True)
+    button_font = get_unicode_font(24, bold=True)
+    small_font = get_unicode_font(18, bold=False)
+    footer_font = get_unicode_font(19, bold=True)
+
+    # Logo.
     logo_path = prepare_round_logo()
+
     if logo_path and os.path.exists(logo_path):
         try:
             with Image.open(logo_path).convert("RGBA") as logo:
+                logo_size = 190
                 logo = logo.resize(
-                    (LOGO_SIZE, LOGO_SIZE),
+                    (logo_size, logo_size),
                     Image.Resampling.LANCZOS
                 )
+
+                logo_x = (width - logo_size) // 2
+                logo_y = 95
+
                 img.paste(
                     logo,
-                    (LOGO_MARGIN, LOGO_MARGIN),
+                    (logo_x, logo_y),
                     logo
                 )
         except Exception as e:
-            print(f"⚠️ End-card logo failed: {e}", flush=True)
+            print(
+                f"⚠️ CTA logo failed: {e}",
+                flush=True
+            )
+
+    draw = ImageDraw.Draw(img)
 
     def centered(text_value, font, y, fill=(255, 255, 255)):
         bbox = draw.textbbox(
@@ -1646,38 +1699,65 @@ def create_end_card(duration=END_CARD_DURATION):
             text_value,
             font=font
         )
-        w = bbox[2] - bbox[0]
-        x = (width - w) // 2
+        text_width = bbox[2] - bbox[0]
+        x = (width - text_width) // 2
 
         draw.text(
             (x, y),
             text_value,
             font=font,
             fill=fill,
-            stroke_width=2,
+            stroke_width=1,
             stroke_fill=(0, 0, 0)
         )
 
-    centered(
-        "LIKE • SUBSCRIBE • SHARE",
-        title_font,
-        410
-    )
-
+    # Branding.
     centered(
         "SMART LEARNING LAB",
-        subtitle_font,
-        500
+        title_font,
+        305
     )
 
+    centered(
+        "Learn Smarter. Grow Faster.",
+        tagline_font,
+        365,
+        fill=(220, 235, 250)
+    )
+
+    centered(
+        "❤️ LIKE OUR PAGE  •  🔔 FOLLOW US",
+        message_font,
+        425
+    )
+
+    # Facebook button.
+    fb_x1 = 80
+    fb_x2 = width - 80
+    fb_y1 = 490
+    fb_y2 = 555
+
+    draw.rounded_rectangle(
+        (fb_x1, fb_y1, fb_x2, fb_y2),
+        radius=18,
+        fill=(24, 119, 242)
+    )
+
+    centered(
+        "👍 LIKE & FOLLOW ON FACEBOOK",
+        button_font,
+        505
+    )
+
+    # QR code.
     qr_created = False
 
     try:
         import qrcode
 
         qr = qrcode.QRCode(
-            version=3,
-            box_size=6,
+            version=4,
+            box_size=7,
             border=2
         )
         qr.add_data(CTA_URL)
@@ -1688,14 +1768,27 @@ def create_end_card(duration=END_CARD_DURATION):
             back_color="white"
         ).convert("RGB")
 
-        qr_size = 260
+        qr_size = 230
         qr_img.thumbnail(
             (qr_size, qr_size),
             Image.Resampling.LANCZOS
         )
 
         qr_x = (width - qr_img.width) // 2
-        qr_y = 590
+        qr_y = 610
+
+        # White QR background/frame.
+        padding = 12
+        draw.rounded_rectangle(
+            (
+                qr_x - padding,
+                qr_y - padding,
+                qr_x + qr_img.width + padding,
+                qr_y + qr_img.height + padding
+            ),
+            radius=10,
+            fill=(255, 255, 255)
+        )
 
         img.paste(
             qr_img,
@@ -1706,38 +1799,74 @@ def create_end_card(duration=END_CARD_DURATION):
 
         centered(
             "SCAN TO VISIT",
-            url_font,
-            qr_y + qr_img.height + 20
+            small_font,
+            qr_y + qr_img.height + 28
         )
 
     except Exception as e:
         print(
-            f"ℹ️ QR code unavailable: {e}. "
-            "The URL will still be displayed.",
+            f"ℹ️ QR code unavailable: {e}",
             flush=True
         )
 
+    # URL.
     url_text = CTA_URL
-    if len(url_text) > 42:
-        url_text = url_text[:39] + "..."
 
-    url_y = 925 if qr_created else 650
+    if len(url_text) > 48:
+        url_text = url_text[:45] + "..."
 
     centered(
         url_text,
-        url_font,
-        url_y,
-        fill=(255, 200, 50)
+        small_font,
+        905 if qr_created else 650,
+        fill=(255, 205, 65)
+    )
+
+    # Secondary CTA.
+    centered(
+        "Follow for more inspiring stories",
+        tagline_font,
+        970,
+        fill=(220, 235, 250)
+    )
+
+    # Orange visual button.
+    learn_x1 = 80
+    learn_x2 = width - 80
+    learn_y1 = 1020
+    learn_y2 = 1085
+
+    draw.rounded_rectangle(
+        (learn_x1, learn_y1, learn_x2, learn_y2),
+        radius=18,
+        fill=(255, 126, 0)
     )
 
     centered(
-        "Learn Smarter. Grow Faster.",
-        subtitle_font,
-        1040
+        "🚀 VISIT SMART LEARNING LAB",
+        button_font,
+        1035
     )
 
+    centered(
+        "BY NITIN MITTAL INNOVATIONS",
+        footer_font,
+        1115,
+        fill=(205, 220, 235)
+    )
+
+    # Save the rendered end card.
     path = "images/_end_card.png"
     img.save(path)
+
+    print(
+        f"📣 Final Smart Learning Lab CTA created: {path}",
+        flush=True
+    )
+    print(
+        f"🔗 CTA URL: {CTA_URL}",
+        flush=True
+    )
 
     return ImageClip(path).set_duration(duration)
 
