@@ -545,6 +545,23 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
         last_align,
     ) = _split_title_for_design(title)
 
+    print(
+        "📝 TITLE LAYOUT:",
+        flush=True,
+    )
+    print(
+        f"   Line 1 ({len(first.split()) if first else 0} words): {first}",
+        flush=True,
+    )
+    print(
+        f"   Line 2 ({len(middle.split()) if middle else 0} words): {middle}",
+        flush=True,
+    )
+    print(
+        f"   Line 3 ({len(last.split()) if last else 0} words): {last}",
+        flush=True,
+    )
+
     # The title has a fixed safe region between the top artwork and the
     # subtitle plaque. Font size is calculated from BOTH available width
     # and available vertical space, so long titles automatically become
@@ -635,7 +652,7 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
             first_y,
             first,
             first_font,
-            (238, 238, 235),
+            (255, 143, 10),
             align=first_align,
         )
 
@@ -719,7 +736,7 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
                 first_y,
                 first,
                 first_font,
-                (238, 238, 235),
+                (255, 143, 10),
                 align=first_align,
             )
 
@@ -743,7 +760,7 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
                 first_y,
                 first,
                 first_font,
-                (238, 238, 235),
+                (255, 143, 10),
                 align=first_align,
             )
 
