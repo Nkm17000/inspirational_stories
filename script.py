@@ -1,3 +1,11 @@
+
+# Required packages:
+# pip install -U edge-tts pymongo requests numpy nest-asyncio pillow moviepy
+#
+# For Hindi subtitles on Linux/GitHub Actions:
+# sudo apt-get update
+# sudo apt-get install -y fonts-noto-core
+#
 import os
 import requests
 import urllib.parse
@@ -6,6 +14,7 @@ import numpy as np
 import asyncio
 import edge_tts
 import nest_asyncio
+import unicodedata
 
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
@@ -302,6 +311,59 @@ def get_story_from_mongodb():
         client.close()
 
 
+
+# ============================================================
+# FONT HELPERS
+# ============================================================
+
+def get_unicode_font(size, bold=True):
+    """
+    Find a font that supports both Latin and Devanagari/Hindi.
+    Works on common Linux/GitHub Actions and Windows setups.
+    """
+    candidates = []
+
+    if bold:
+        candidates.extend([
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+            "NotoSansDevanagari-Bold.ttf",
+            "NotoSansDevanagari.ttf",
+        ])
+    else:
+        candidates.extend([
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+            "NotoSansDevanagari-Regular.ttf",
+            "NotoSansDevanagari.ttf",
+        ])
+
+    # Generic fallback fonts.
+    candidates.extend([
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ])
+
+    for font_path in candidates:
+        try:
+            if os.path.exists(font_path):
+                return ImageFont.truetype(font_path, size)
+        except Exception:
+            pass
+
+    try:
+        return ImageFont.truetype(
+            "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+            size
+        )
+    except Exception:
+        return ImageFont.load_default()
+
+
 # ============================================================
 # IMAGE GENERATION
 # ============================================================
@@ -462,16 +524,7 @@ def generate_image(
 
         draw = ImageDraw.Draw(img)
 
-        try:
-
-            font = ImageFont.truetype(
-                "DejaVuSans-Bold.ttf",
-                45
-            )
-
-        except:
-
-            font = ImageFont.load_default()
+        font = get_unicode_font(45, bold=True)
 
         text = fallback_text or "Scene"
 
@@ -548,32 +601,170 @@ def generate_image(
 # VOICE
 # ============================================================
 
+# ============================================================
+# LANGUAGE + VOICE HELPERS
+# ============================================================
+
+def detect_text_language(text):
+    """
+    Detect Hindi vs English from Unicode script.
+
+    Hindi/Devanagari characters are in U+0900-U+097F.
+    If enough Devanagari characters are present, use Hindi TTS.
+    Otherwise use English TTS.
+    """
+    if not text:
+        return "en"
+
+    devanagari = sum(
+        1 for ch in text
+        if "\u0900" <= ch <= "\u097F"
+    )
+
+    latin = sum(
+        1 for ch in text
+        if ("A" <= ch <= "Z") or ("a" <= ch <= "z")
+    )
+
+    if devanagari > 0 and devanagari >= latin * 0.20:
+        return "hi"
+
+    return "en"
+
+
+def get_voice_candidates(text):
+    """
+    Return voices in priority order.
+
+    Hindi:
+      1. hi-IN-SwaraNeural
+      2. hi-IN-AnanyaNeural
+      3. hi-IN-MadhurNeural
+      4. en-IN-NeerjaNeural
+
+    English:
+      1. en-IN-NeerjaNeural
+      2. en-IN-AnanyaNeural
+      3. en-IN-PrabhatNeural
+    """
+    language = detect_text_language(text)
+
+    if language == "hi":
+        return [
+            "hi-IN-SwaraNeural",
+            "hi-IN-AnanyaNeural",
+            "hi-IN-MadhurNeural",
+            "en-IN-NeerjaNeural",
+        ]
+
+    return [
+        "en-IN-NeerjaNeural",
+        "en-IN-AnanyaNeural",
+        "en-IN-PrabhatNeural",
+    ]
+
+
+def clean_tts_text(text):
+    """
+    Normalize text without destroying Hindi Unicode characters.
+    """
+    if not text:
+        return ""
+
+    text = str(text)
+
+    # Remove accidental control characters but preserve Unicode.
+    text = "".join(
+        ch for ch in text
+        if ch in "\n\r\t" or ord(ch) >= 32
+    )
+
+    # Normalize whitespace.
+    text = " ".join(text.split())
+
+    return text.strip()
+
+
+def run_async(coro):
+    """
+    Safely run an async coroutine even when an event loop is already active.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        result = {}
+
+        def runner():
+            try:
+                result["value"] = asyncio.run(coro)
+            except Exception as e:
+                result["error"] = e
+
+        import threading
+        thread = threading.Thread(target=runner)
+        thread.start()
+        thread.join()
+
+        if "error" in result:
+            raise result["error"]
+
+        return result.get("value")
+
+    return asyncio.run(coro)
+
+
+# ============================================================
+# VOICE
+# ============================================================
+
 def generate_voice(
     text,
     path
 ):
     """
-    Generate Edge-TTS audio and collect exact word-boundary timings.
+    Generate Edge-TTS audio for both Hindi and English.
+
+    Hindi text is automatically routed to a Hindi voice.
+    English text is routed to an Indian-English voice.
+
+    WordBoundary timings are collected when Edge-TTS provides them.
+    The video does NOT depend on WordBoundary timings; subtitles use
+    the actual generated audio duration.
 
     Returns:
         (audio_path, word_timings)
-
-    word_timings:
-        [
-            {
-                "word": "Raju",
-                "start": 0.25,
-                "end": 0.60
-            },
-            ...
-        ]
     """
 
-    async def tts():
+    text = clean_tts_text(text)
+
+    if not text:
+        print("⚠️ Empty narration text; skipping TTS", flush=True)
+        return None, []
+
+    language = detect_text_language(text)
+    voices = get_voice_candidates(text)
+
+    print(
+        f"🌐 Detected language: "
+        f"{'Hindi' if language == 'hi' else 'English'}",
+        flush=True
+    )
+
+    print(
+        f"🎤 Voice candidates: {', '.join(voices)}",
+        flush=True
+    )
+
+    async def tts(voice_name):
         communicate = edge_tts.Communicate(
             text=text,
-            voice="en-IN-NeerjaNeural",
-            rate="-15%"
+            voice=voice_name,
+            rate="-15%",
+            # Explicitly request word boundaries where supported.
+            boundary="WordBoundary"
         )
 
         audio_bytes = bytearray()
@@ -581,10 +772,15 @@ def generate_voice(
 
         async for chunk in communicate.stream():
 
-            if chunk["type"] == "audio":
-                audio_bytes.extend(chunk["data"])
+            chunk_type = chunk.get("type")
 
-            elif chunk["type"] == "WordBoundary":
+            if chunk_type == "audio":
+                data = chunk.get("data", b"")
+
+                if data:
+                    audio_bytes.extend(data)
+
+            elif chunk_type == "WordBoundary":
                 word = chunk.get("text", "").strip()
 
                 if not word:
@@ -607,45 +803,89 @@ def generate_voice(
 
         if not audio_bytes:
             raise RuntimeError(
-                "Edge-TTS returned no audio"
+                f"Edge-TTS returned no audio for voice '{voice_name}'"
             )
 
-        with open(path, "wb") as f:
+        # Write atomically so a failed request never leaves a bad MP3.
+        temp_path = path + ".tmp"
+
+        with open(temp_path, "wb") as f:
             f.write(audio_bytes)
+
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) < 1000:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+            raise RuntimeError(
+                f"TTS produced an invalid/empty audio file for '{voice_name}'"
+            )
+
+        os.replace(temp_path, path)
 
         return word_timings
 
-    for attempt in range(3):
-        try:
-            print(
-                f"🎤 Voice attempt {attempt + 1}",
-                flush=True
-            )
+    # Try each suitable voice. This is much better than retrying
+    # the same voice three times when the selected voice is unavailable.
+    for voice_index, voice_name in enumerate(voices, start=1):
 
-            timings = asyncio.run(tts())
+        for attempt in range(1, 3):
 
-            print(
-                f"✅ Voice generated: "
-                f"{len(timings)} word timings",
-                flush=True
-            )
+            try:
+                print(
+                    f"🎤 Voice {voice_index}/{len(voices)} "
+                    f"({voice_name}) attempt {attempt}",
+                    flush=True
+                )
 
-            return path, timings
+                timings = run_async(tts(voice_name))
 
-        except Exception as e:
-            print(
-                f"⚠️ Voice retry: {e}",
-                flush=True
-            )
+                print(
+                    f"✅ Voice generated using {voice_name}: "
+                    f"{len(timings)} word timings",
+                    flush=True
+                )
 
-            time.sleep(2)
+                return path, timings
+
+            except Exception as e:
+
+                print(
+                    f"⚠️ {voice_name} failed: {e}",
+                    flush=True
+                )
+
+                time.sleep(2)
 
     print(
-        "❌ Voice failed",
+        "❌ All Edge-TTS voices failed",
         flush=True
     )
 
     return None, []
+
+
+# ============================================================
+# WORD COUNT / SUBTITLE HELPERS
+# ============================================================
+
+def split_words_unicode(text):
+    """
+    Unicode-safe word splitting.
+
+    Python's split() already handles Hindi words separated by spaces,
+    but this helper also removes empty tokens and avoids accidental
+    punctuation-only tokens.
+    """
+    if not text:
+        return []
+
+    return [
+        word.strip()
+        for word in str(text).split()
+        if word.strip()
+    ]
 
 # ============================================================
 # SUBTITLE
@@ -683,19 +923,13 @@ def create_subtitle(text, duration, word_timings=None):
     MAX_LINES = 3
     LINE_HEIGHT = 60
 
-    try:
-        font = ImageFont.truetype(
-            "DejaVuSans-Bold.ttf",
-            FONT_SIZE
-        )
-    except Exception:
-        font = ImageFont.load_default()
+    font = get_unicode_font(FONT_SIZE, bold=True)
 
     # ------------------------------------------------------------
     # Split sentence into words
     # ------------------------------------------------------------
 
-    words = text.split()
+    words = split_words_unicode(text)
 
     if not words:
         return ImageClip(
@@ -798,13 +1032,7 @@ def create_subtitle(text, duration, word_timings=None):
         render_font = font
 
         if len(lines) > MAX_LINES:
-            try:
-                render_font = ImageFont.truetype(
-                    "DejaVuSans-Bold.ttf",
-                    34
-                )
-            except Exception:
-                render_font = font
+            render_font = get_unicode_font(34, bold=True)
 
         # --------------------------------------------------------
         # Debug log
@@ -962,7 +1190,12 @@ def create_scene(
     # sub_image_prompts only controls which images are shown.
     # --------------------------------------------------------
 
-    text = scene["text"]
+    text = clean_tts_text(scene["text"])
+
+    if not text:
+        raise ValueError(
+            f"❌ Scene {scene_number} contains empty narration text"
+        )
 
     # --------------------------------------------------------
     # New MongoDB structure:
@@ -1028,11 +1261,17 @@ def create_scene(
         audio_path
     )
 
-    audio = (
-        AudioFileClip(audio_path)
-        if voice
-        else None
-    )
+    audio = None
+
+    if voice and os.path.exists(audio_path):
+        try:
+            audio = AudioFileClip(audio_path)
+        except Exception as e:
+            print(
+                f"⚠️ Generated audio could not be opened: {e}",
+                flush=True
+            )
+            audio = None
 
     duration = max(
         audio.duration

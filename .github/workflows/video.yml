@@ -23,36 +23,124 @@ jobs:
 
     steps:
 
+      # --------------------------------------------------
       # Checkout code
+      # --------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Setup Python 3.10
+      # --------------------------------------------------
+      # Setup Python
+      # --------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: "pip"
 
+      # --------------------------------------------------
       # Verify Python
+      # --------------------------------------------------
       - name: Verify Python
         run: |
           python --version
           python -m pip --version
 
-      # Install ffmpeg
-      - name: Install ffmpeg
+      # --------------------------------------------------
+      # Install system dependencies
+      # --------------------------------------------------
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
 
-      # Install dependencies
+          sudo apt-get install -y \
+            ffmpeg \
+            fonts-noto-core \
+            fonts-noto-extra
+
+          fc-cache -f -v
+
+      # --------------------------------------------------
+      # Verify Hindi fonts
+      # --------------------------------------------------
+      - name: Verify Hindi fonts
+        run: |
+          echo "Checking Devanagari fonts..."
+
+          fc-list :lang=hi family file | head -20
+
+          echo "Checking Noto Devanagari fonts..."
+
+          find /usr/share/fonts -iname "*Devanagari*" | head -20
+
+      # --------------------------------------------------
+      # Install Python dependencies
+      # --------------------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      # --------------------------------------------------
+      # Verify Edge TTS
+      # --------------------------------------------------
+      - name: Verify Edge TTS
+        run: |
+          edge-tts --version
+
+      # --------------------------------------------------
+      # Test Hindi TTS
+      # --------------------------------------------------
+      - name: Test Hindi TTS
+        run: |
+          python - <<'PY'
+          import asyncio
+          import edge_tts
+
+          async def main():
+              text = "एक विशाल पहाड़ी जंगल में अर्जुन नाम का एक लकड़हारा रहता था।"
+
+              communicate = edge_tts.Communicate(
+                  text=text,
+                  voice="hi-IN-SwaraNeural",
+                  rate="-15%"
+              )
+
+              await communicate.save("test_hindi.mp3")
+
+          asyncio.run(main())
+
+          print("✅ Hindi TTS test completed successfully")
+          PY
+
+      # --------------------------------------------------
+      # Test English TTS
+      # --------------------------------------------------
+      - name: Test English TTS
+        run: |
+          python - <<'PY'
+          import asyncio
+          import edge_tts
+
+          async def main():
+              text = "Deep inside a vast mountain forest, Arjun lived in a small cabin."
+
+              communicate = edge_tts.Communicate(
+                  text=text,
+                  voice="en-IN-NeerjaNeural",
+                  rate="-15%"
+              )
+
+              await communicate.save("test_english.mp3")
+
+          asyncio.run(main())
+
+          print("✅ English TTS test completed successfully")
+          PY
+
+      # --------------------------------------------------
       # Validate MongoDB connection string
+      # --------------------------------------------------
       - name: Validate MongoDB URI
         run: |
           if [ -z "$MONGODB_URI" ]; then
@@ -62,7 +150,9 @@ jobs:
             echo "✅ MONGODB_URI is configured"
           fi
 
+      # --------------------------------------------------
       # Validate Groq API key
+      # --------------------------------------------------
       - name: Validate Groq API key
         run: |
           if [ -z "$GROQ_API_KEY" ]; then
@@ -72,15 +162,33 @@ jobs:
             echo "✅ GROQ_API_KEY is configured"
           fi
 
+      # --------------------------------------------------
       # Run video generator
+      # --------------------------------------------------
       - name: Run Video Generator
         run: |
           python script.py
 
+      # --------------------------------------------------
       # Upload generated video
+      # --------------------------------------------------
       - name: Upload video
         uses: actions/upload-artifact@v4
         with:
           name: generated-video
           path: final_video.mp4
           if-no-files-found: error
+
+      # --------------------------------------------------
+      # Upload audio and images for debugging
+      # --------------------------------------------------
+      - name: Upload generated assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-assets
+          path: |
+            audio/**
+            images/**
+            test_hindi.mp3
+            test_english.mp3
+          if-no-files-found: warn
