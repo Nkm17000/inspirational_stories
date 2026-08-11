@@ -51,7 +51,7 @@ LOGO_MARGIN = int(os.getenv("LOGO_MARGIN", "18"))
 
 # Final Like / Subscribe / Learn More page.
 # Change CTA_URL to your real Smart Learning Lab page.
-CTA_URL = os.getenv("CTA_URL", "https://www.facebook.com/thesmartlearninglab")
+CTA_URL = "https://www.facebook.com/thesmartlearninglab"
 END_CARD_DURATION = float(os.getenv("END_CARD_DURATION", "5"))
 
 # MongoDB
@@ -1597,6 +1597,45 @@ def create_scene(
 
 
 # ============================================================
+# CTA FONT HELPER
+# ============================================================
+
+def get_cta_latin_font(size, bold=True):
+    """
+    Use a guaranteed Latin font for the English CTA card.
+
+    The normal subtitle font helper prefers Devanagari fonts. Some
+    Linux font combinations can render Latin glyphs as square boxes.
+    The CTA is English-only, so use a dedicated Latin font here.
+    """
+    if bold:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/lato/Lato-Bold.ttf",
+            "DejaVuSans-Bold.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/lato/Lato-Regular.ttf",
+            "DejaVuSans.ttf",
+        ]
+
+    for font_path in candidates:
+        try:
+            if os.path.exists(font_path):
+                return ImageFont.truetype(font_path, size)
+        except Exception:
+            pass
+
+    return get_unicode_font(size, bold=bold)
+
+
+# ============================================================
 # FINAL SMART LEARNING LAB LIKE / SUBSCRIBE PAGE
 # ============================================================
 
@@ -1658,12 +1697,12 @@ def create_end_card(duration=END_CARD_DURATION):
     )
 
     # Fonts.
-    title_font = get_unicode_font(42, bold=True)
-    tagline_font = get_unicode_font(24, bold=False)
-    message_font = get_unicode_font(25, bold=True)
-    button_font = get_unicode_font(24, bold=True)
-    small_font = get_unicode_font(18, bold=False)
-    footer_font = get_unicode_font(19, bold=True)
+    title_font = get_cta_latin_font(42, bold=True)
+    tagline_font = get_cta_latin_font(24, bold=False)
+    message_font = get_cta_latin_font(25, bold=True)
+    button_font = get_cta_latin_font(24, bold=True)
+    small_font = get_cta_latin_font(18, bold=False)
+    footer_font = get_cta_latin_font(19, bold=True)
 
     # Logo.
     logo_path = prepare_round_logo()
@@ -1726,7 +1765,7 @@ def create_end_card(duration=END_CARD_DURATION):
     )
 
     centered(
-        "❤️ LIKE OUR PAGE  •  🔔 FOLLOW US",
+        "LIKE OUR PAGE  •  FOLLOW US",
         message_font,
         425
     )
@@ -1744,7 +1783,7 @@ def create_end_card(duration=END_CARD_DURATION):
     )
 
     centered(
-        "👍 LIKE & FOLLOW ON FACEBOOK",
+        "LIKE & FOLLOW ON FACEBOOK",
         button_font,
         505
     )
@@ -1843,7 +1882,7 @@ def create_end_card(duration=END_CARD_DURATION):
     )
 
     centered(
-        "🚀 VISIT SMART LEARNING LAB",
+        "VISIT SMART LEARNING LAB",
         button_font,
         1035
     )
@@ -1860,11 +1899,11 @@ def create_end_card(duration=END_CARD_DURATION):
     img.save(path)
 
     print(
-        f"📣 Final Smart Learning Lab CTA created: {path}",
+        f"Final Smart Learning Lab CTA created: {path}",
         flush=True
     )
     print(
-        f"🔗 CTA URL: {CTA_URL}",
+        f"CTA URL: {CTA_URL}",
         flush=True
     )
 
