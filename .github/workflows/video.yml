@@ -25,6 +25,12 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
       # --------------------------------------------------
+      # Facebook Page
+      # --------------------------------------------------
+      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+      FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+
+      # --------------------------------------------------
       # Final Like / Subscribe page
       # --------------------------------------------------
       CTA_URL: "https://www.facebook.com/thesmartlearninglab"
@@ -40,7 +46,10 @@ jobs:
       # Video configuration
       # --------------------------------------------------
       END_CARD_DURATION: "5"
-      TITLE_CARD_DURATION: "4"
+
+      # IMPORTANT:
+      # Title page should be 2 seconds
+      TITLE_CARD_DURATION: "2"
 
       # --------------------------------------------------
       # Title page template
@@ -151,7 +160,6 @@ jobs:
             ls -lah smart_video
           else
             echo "⚠️ smart_video directory not found"
-            echo "This is okay only if your project does not use smart_video."
           fi
 
           echo ""
@@ -178,9 +186,6 @@ jobs:
             file "$LOGO_PATH"
           else
             echo "❌ logo.png NOT found"
-            echo ""
-            echo "Expected:"
-            echo "  $LOGO_PATH"
             exit 1
           fi
 
@@ -199,11 +204,7 @@ jobs:
             file "$TITLE_TEMPLATE_PATH"
           else
             echo "❌ Title page template NOT found"
-            echo ""
-            echo "Expected:"
-            echo "  $TITLE_TEMPLATE_PATH"
-            echo ""
-            echo "Current assets directory:"
+            echo "Expected: $TITLE_TEMPLATE_PATH"
             ls -lah assets 2>/dev/null || true
             exit 1
           fi
@@ -218,7 +219,6 @@ jobs:
           echo "=========================================="
 
           python -m pip install --upgrade pip
-
           python -m pip install -r requirements.txt
 
       # ==================================================
@@ -282,10 +282,6 @@ jobs:
       # ==================================================
       - name: Test Hindi TTS
         run: |
-          echo "=========================================="
-          echo "Testing Hindi TTS"
-          echo "=========================================="
-
           python - <<'PY'
           import asyncio
           import edge_tts
@@ -322,10 +318,6 @@ jobs:
       # ==================================================
       - name: Test English TTS
         run: |
-          echo "=========================================="
-          echo "Testing English TTS"
-          echo "=========================================="
-
           python - <<'PY'
           import asyncio
           import edge_tts
@@ -358,14 +350,10 @@ jobs:
           ls -lh test_english.mp3
 
       # ==================================================
-      # 15. Validate MongoDB URI
+      # 15. Validate MongoDB
       # ==================================================
       - name: Validate MongoDB URI
         run: |
-          echo "=========================================="
-          echo "Checking MongoDB"
-          echo "=========================================="
-
           if [ -z "$MONGODB_URI" ]; then
             echo "❌ MONGODB_URI is EMPTY"
             exit 1
@@ -374,40 +362,54 @@ jobs:
           fi
 
       # ==================================================
-      # 16. Validate Groq API key
+      # 16. Validate Groq
       # ==================================================
       - name: Validate Groq API key
         run: |
-          echo "=========================================="
-          echo "Checking Groq"
-          echo "=========================================="
-
           if [ -z "$GROQ_API_KEY" ]; then
             echo "⚠️ GROQ_API_KEY is EMPTY"
-            echo "Video rendering does not directly require Groq."
           else
             echo "✅ GROQ_API_KEY is configured"
           fi
 
       # ==================================================
-      # 17. Validate CTA
+      # 17. Validate Facebook credentials
+      # ==================================================
+      - name: Validate Facebook credentials
+        run: |
+          echo "=========================================="
+          echo "Facebook Page configuration"
+          echo "=========================================="
+
+          if [ -z "$FB_PAGE_ID" ]; then
+            echo "❌ FB_PAGE_ID is EMPTY"
+            exit 1
+          else
+            echo "✅ FB_PAGE_ID is configured"
+          fi
+
+          if [ -z "$FB_PAGE_ACCESS_TOKEN" ]; then
+            echo "❌ FB_PAGE_ACCESS_TOKEN is EMPTY"
+            exit 1
+          else
+            echo "✅ FB_PAGE_ACCESS_TOKEN is configured"
+          fi
+
+      # ==================================================
+      # 18. Validate CTA
       # ==================================================
       - name: Validate CTA URL
         run: |
-          echo "=========================================="
-          echo "Checking CTA URL"
-          echo "=========================================="
-
           if [ -z "$CTA_URL" ]; then
             echo "❌ CTA_URL is EMPTY"
             exit 1
           fi
 
-          echo "✅ CTA_URL configured"
-          echo "CTA page: $CTA_URL"
+          echo "✅ CTA URL configured"
+          echo "$CTA_URL"
 
       # ==================================================
-      # 18. Validate title configuration
+      # 19. Validate title configuration
       # ==================================================
       - name: Validate title page configuration
         run: |
@@ -426,33 +428,32 @@ jobs:
           echo "✅ Title page configuration valid"
 
       # ==================================================
-      # 19. Python syntax validation
+      # 20. Validate Python source
       # ==================================================
       - name: Validate Python source
         run: |
-          echo "=========================================="
-          echo "Python syntax validation"
-          echo "=========================================="
-
           python -m py_compile main.py
 
           if [ -d "smart_video" ]; then
-
             for file in smart_video/*.py; do
-
               if [ -f "$file" ]; then
                 echo "Checking $file"
                 python -m py_compile "$file"
               fi
-
             done
-
           fi
 
-          echo "✅ All Python files passed syntax validation"
+          if [ ! -f "facebook_upload.py" ]; then
+            echo "❌ facebook_upload.py not found"
+            exit 1
+          fi
+
+          python -m py_compile facebook_upload.py
+
+          echo "✅ Python syntax validation successful"
 
       # ==================================================
-      # 20. Run video generator
+      # 21. Run Video Generator
       # ==================================================
       - name: Run Video Generator
         run: |
@@ -460,22 +461,12 @@ jobs:
           echo "Starting Smart Video Generator"
           echo "=========================================="
 
-          echo ""
-          echo "Working directory:"
           pwd
-
-          echo ""
-          echo "Title template:"
-          echo "$TITLE_TEMPLATE_PATH"
-
-          echo ""
-          echo "Running:"
-          echo "python main.py"
 
           python main.py
 
       # ==================================================
-      # 21. Verify generated video
+      # 22. Verify generated video
       # ==================================================
       - name: Verify generated video
         run: |
@@ -488,7 +479,7 @@ jobs:
           pwd
 
           echo ""
-          echo "Root directory after generation:"
+          echo "Root files:"
           ls -lah
 
           echo ""
@@ -502,7 +493,6 @@ jobs:
           echo "Checking final_video.mp4..."
 
           if [ ! -f "final_video.mp4" ]; then
-
             echo "❌ final_video.mp4 was not generated"
 
             echo ""
@@ -522,30 +512,48 @@ jobs:
 
           VIDEO_SIZE=$(stat -c%s "final_video.mp4")
 
-          echo ""
           echo "✅ final_video.mp4 generated"
           echo "Size: $VIDEO_SIZE bytes"
 
           ls -lh final_video.mp4
 
           echo ""
-          echo "File information:"
-          file final_video.mp4
-
-          echo ""
           echo "Video information:"
 
           ffprobe \
             -v error \
-            -show_entries \
-            format=duration,size \
-            -show_entries \
-            stream=codec_name,width,height \
+            -show_entries format=duration,size \
+            -show_entries stream=codec_name,width,height \
             -of default=noprint_wrappers=1 \
             final_video.mp4
 
       # ==================================================
-      # 22. Upload final video
+      # 23. Publish video to Facebook Page
+      # ==================================================
+      - name: Publish video to Facebook Page
+        run: |
+          echo "=========================================="
+          echo "Publishing video to Facebook Page"
+          echo "=========================================="
+
+          if [ ! -f "facebook_upload.py" ]; then
+            echo "❌ facebook_upload.py not found"
+            exit 1
+          fi
+
+          if [ ! -f "final_video.mp4" ]; then
+            echo "❌ final_video.mp4 not found"
+            exit 1
+          fi
+
+          echo "Running facebook_upload.py..."
+
+          python facebook_upload.py
+
+          echo "✅ Facebook publishing step completed"
+
+      # ==================================================
+      # 24. Upload final video artifact
       # ==================================================
       - name: Upload video
         uses: actions/upload-artifact@v4
@@ -556,7 +564,7 @@ jobs:
           retention-days: 7
 
       # ==================================================
-      # 23. Upload generated assets
+      # 25. Upload generated assets
       # ==================================================
       - name: Upload generated assets
         uses: actions/upload-artifact@v4
