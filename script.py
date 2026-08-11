@@ -6,303 +6,672 @@ import numpy as np
 import asyncio
 import edge_tts
 import nest_asyncio
-import json
-import re
 
-from groq import Groq
-from prompt import build_prompt
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
+
 from moviepy.editor import *
 from moviepy.video.fx.all import fadein, fadeout
 from PIL import Image, ImageDraw, ImageFont
 from moviepy.audio.AudioClip import AudioArrayClip
 
-# =========================
+
+# ============================================================
 # FIX ASYNC
-# =========================
+# ============================================================
+
 nest_asyncio.apply()
 
-# =========================
+
+# ============================================================
 # CONFIG
-# =========================
+# ============================================================
+
 VIDEO_SIZE = (720, 1280)
 FPS = 24
 MIN_DURATION = 5
 
-DATA_FILE = "indian_story_titles_1000.json"
-COUNTER_FILE = "counter.json"
+# MongoDB
+MONGODB_URI = os.getenv("MONGODB_URI")
+
+DATABASE_NAME = "storydb"
+COLLECTION_NAME = "story_scenes"
+
+# Optional:
+# Set STORY_ID when you want to process a specific story.
+#
+# Example:
+# STORY_ID=story_001
+#
+# If not provided, the first story from MongoDB will be used.
+STORY_ID = os.getenv("STORY_ID")
 
 os.makedirs("images", exist_ok=True)
 os.makedirs("audio", exist_ok=True)
 
-# =========================
-# API KEY
-# =========================
-api_key = os.getenv("GROQ_API_KEY")
-if not api_key:
-    raise ValueError("❌ GROQ_API_KEY not set")
 
-client = Groq(api_key=api_key)
+# ============================================================
+# MONGODB CONNECTION
+# ============================================================
 
-# =========================
-# COUNTER
-# =========================
-def load_counter():
-    if not os.path.exists(COUNTER_FILE):
-        return 0
-    with open(COUNTER_FILE) as f:
-        return json.load(f).get("counter", 0)
+def get_mongodb_collection():
 
-def save_counter(value):
-    with open(COUNTER_FILE, "w") as f:
-        json.dump({"counter": value}, f)
+    if not MONGODB_URI:
+        raise ValueError(
+            "❌ MONGODB_URI environment variable is not set"
+        )
 
-def get_topic():
-    with open(DATA_FILE, encoding="utf-8") as f:
-        data = json.load(f)
+    try:
 
-    counter = load_counter()
-    topic_data = data[counter % len(data)]
+        print(
+            "🔌 Connecting to MongoDB Atlas...",
+            flush=True
+        )
 
-    title = topic_data.get("title", "")
-    story_id = topic_data.get("id", counter)
+        client = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=10000
+        )
 
-    print(f"🎯 Topic: {title} (ID: {story_id})", flush=True)
+        # Test MongoDB connection
+        client.admin.command("ping")
 
-    save_counter(counter + 1)
-    return title
+        print(
+            "✅ MongoDB connection successful!",
+            flush=True
+        )
 
-# =========================
-# STORY (FIXED + RETRY)
-# =========================
-def get_story():
-    topic = get_topic()
+        db = client[DATABASE_NAME]
 
-    full_prompt = f"""
-Use this topic: "{topic}"
-{build_prompt}
-"""
+        collection = db[COLLECTION_NAME]
 
-    for attempt in range(3):
-        try:
-            print(f"🧠 Generating story (attempt {attempt+1})...", flush=True)
+        print(
+            f"📦 Database: {DATABASE_NAME}",
+            flush=True
+        )
 
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": "You are a viral short video storyteller."},
-                    {"role": "user", "content": full_prompt}
-                ],
-                temperature=0.8
+        print(
+            f"📚 Collection: {COLLECTION_NAME}",
+            flush=True
+        )
+
+        return client, collection
+
+    except ConnectionFailure as e:
+
+        print(
+            "❌ MongoDB connection failed:",
+            e,
+            flush=True
+        )
+
+        raise
+
+
+# ============================================================
+# GET STORY FROM MONGODB
+# ============================================================
+
+def get_story_from_mongodb():
+
+    client, collection = get_mongodb_collection()
+
+    try:
+
+        # ----------------------------------------------------
+        # Get specific story
+        # ----------------------------------------------------
+
+        if STORY_ID:
+
+            print(
+                f"🔎 Searching story_id: {STORY_ID}",
+                flush=True
             )
 
-            output = response.choices[0].message.content
-            print("📦 RAW OUTPUT:\n", output[:500], flush=True)
+            story = collection.find_one({
+                "story_id": STORY_ID
+            })
 
-            if not output or len(output.strip()) == 0:
-                raise ValueError("Empty response")
+        # ----------------------------------------------------
+        # Otherwise get first story
+        # ----------------------------------------------------
 
-            match = re.search(r'\{.*\}', output, re.DOTALL)
-            if not match:
-                raise ValueError("No JSON found")
+        else:
 
-            clean = match.group(0)
-            data = json.loads(clean)
+            print(
+                "🔎 STORY_ID not provided.",
+                flush=True
+            )
 
-            if "scenes" not in data:
-                raise ValueError("Missing scenes key")
+            print(
+                "📖 Getting first story from MongoDB...",
+                flush=True
+            )
 
-            return data["scenes"]
+            story = collection.find_one({})
 
-        except Exception as e:
-            print("⚠️ Retry LLM:", e, flush=True)
-            time.sleep(2)
+        # ----------------------------------------------------
+        # Story not found
+        # ----------------------------------------------------
 
-    print("❌ LLM failed → fallback story", flush=True)
+        if not story:
 
-    return [
-        {"text": "A hidden story begins...", "image_prompt": "dark village mystery cinematic"},
-        {"text": "Something unexpected happens...", "image_prompt": "shock dramatic scene"},
-        {"text": "Truth slowly reveals...", "image_prompt": "reveal suspense cinematic"},
-        {"text": "Everything changes forever...", "image_prompt": "emotional ending cinematic"}
-    ]
+            raise ValueError(
+                "❌ No story found in MongoDB"
+            )
 
-# =========================
-# IMAGE (MULTI FALLBACK)
-# =========================
-def generate_image(prompt, path, fallback_text=None):
+        # ----------------------------------------------------
+        # Read title directly from MongoDB
+        # ----------------------------------------------------
 
-    # 1️⃣ Pollinations
-    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
+        title = story.get(
+            "title",
+            "Untitled Story"
+        )
+
+        story_id = story.get(
+            "story_id",
+            "unknown"
+        )
+
+        print(
+            f"\n📖 Story ID: {story_id}",
+            flush=True
+        )
+
+        print(
+            f"📖 Title: {title}",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # Get scenes
+        # ----------------------------------------------------
+
+        scenes = story.get(
+            "scenes",
+            []
+        )
+
+        if not scenes:
+
+            raise ValueError(
+                "❌ Story contains no scenes"
+            )
+
+        print(
+            f"🎬 Total scenes: {len(scenes)}",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # Validate scenes
+        # ----------------------------------------------------
+
+        valid_scenes = []
+
+        for scene in scenes:
+
+            text = scene.get("text")
+            image_prompt = scene.get("image_prompt")
+
+            if not text:
+
+                print(
+                    "⚠️ Scene skipped: missing text",
+                    flush=True
+                )
+
+                continue
+
+            if not image_prompt:
+
+                print(
+                    "⚠️ Scene skipped: missing image_prompt",
+                    flush=True
+                )
+
+                continue
+
+            valid_scenes.append({
+
+                "scene_number": scene.get(
+                    "scene_number",
+                    len(valid_scenes) + 1
+                ),
+
+                "text": text,
+
+                "image_prompt": image_prompt
+            })
+
+        if not valid_scenes:
+
+            raise ValueError(
+                "❌ No valid scenes found"
+            )
+
+        print(
+            f"✅ Valid scenes: {len(valid_scenes)}",
+            flush=True
+        )
+
+        return story, valid_scenes
+
+    finally:
+
+        client.close()
+
+
+# ============================================================
+# IMAGE GENERATION
+# ============================================================
+
+def generate_image(
+    prompt,
+    path,
+    fallback_text=None
+):
+
+    # --------------------------------------------------------
+    # 1. Pollinations
+    # --------------------------------------------------------
+
+    url = (
+        "https://image.pollinations.ai/prompt/"
+        + urllib.parse.quote(prompt)
+    )
 
     for i in range(3):
+
         try:
-            print(f"🖼️ Pollinations attempt {i+1}", flush=True)
+
+            print(
+                f"🖼️ Pollinations attempt {i + 1}",
+                flush=True
+            )
+
             time.sleep(5)
 
-            r = requests.get(url, timeout=20)
-            if r.status_code == 200:
+            response = requests.get(
+                url,
+                timeout=20
+            )
+
+            if response.status_code == 200:
+
                 with open(path, "wb") as f:
-                    f.write(r.content)
+
+                    f.write(
+                        response.content
+                    )
+
+                print(
+                    f"✅ Image saved: {path}",
+                    flush=True
+                )
+
                 return path
 
         except Exception as e:
-            print("⚠️ Pollinations retry:", e, flush=True)
 
-    # 2️⃣ Picsum (no key)
+            print(
+                "⚠️ Pollinations retry:",
+                e,
+                flush=True
+            )
+
+
+    # --------------------------------------------------------
+    # 2. Picsum fallback
+    # --------------------------------------------------------
+
     try:
-        print("🖼️ Picsum fallback", flush=True)
 
-        picsum_url = f"https://picsum.photos/720/1280?random={int(time.time())}"
-        r = requests.get(picsum_url, timeout=15)
+        print(
+            "🖼️ Picsum fallback",
+            flush=True
+        )
 
-        if r.status_code == 200:
+        picsum_url = (
+            "https://picsum.photos/720/1280"
+            f"?random={int(time.time())}"
+        )
+
+        response = requests.get(
+            picsum_url,
+            timeout=15
+        )
+
+        if response.status_code == 200:
+
             with open(path, "wb") as f:
-                f.write(r.content)
+
+                f.write(
+                    response.content
+                )
+
             return path
 
     except Exception as e:
-        print("⚠️ Picsum failed:", e, flush=True)
 
-    # 3️⃣ DummyImage
+        print(
+            "⚠️ Picsum failed:",
+            e,
+            flush=True
+        )
+
+
+    # --------------------------------------------------------
+    # 3. Dummy image fallback
+    # --------------------------------------------------------
+
     try:
-        print("🖼️ Dummy fallback", flush=True)
+
+        print(
+            "🖼️ Dummy fallback",
+            flush=True
+        )
 
         text = fallback_text or "Scene"
-        dummy_url = f"https://dummyimage.com/720x1280/000/fff&text={urllib.parse.quote(text[:80])}"
 
-        r = requests.get(dummy_url, timeout=10)
-        if r.status_code == 200:
+        dummy_url = (
+            "https://dummyimage.com/720x1280/000/fff"
+            f"&text={urllib.parse.quote(text[:80])}"
+        )
+
+        response = requests.get(
+            dummy_url,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+
             with open(path, "wb") as f:
-                f.write(r.content)
+
+                f.write(
+                    response.content
+                )
+
             return path
 
     except Exception as e:
-        print("⚠️ Dummy failed:", e, flush=True)
 
-    # 4️⃣ Local fallback
-    print("🖼️ Local fallback", flush=True)
+        print(
+            "⚠️ Dummy failed:",
+            e,
+            flush=True
+        )
+
+
+    # --------------------------------------------------------
+    # 4. Local fallback
+    # --------------------------------------------------------
+
+    print(
+        "🖼️ Local fallback",
+        flush=True
+    )
 
     try:
-        img = Image.new("RGB", VIDEO_SIZE, (20, 20, 20))
+
+        img = Image.new(
+            "RGB",
+            VIDEO_SIZE,
+            (20, 20, 20)
+        )
+
         draw = ImageDraw.Draw(img)
 
         try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 45)
+
+            font = ImageFont.truetype(
+                "DejaVuSans-Bold.ttf",
+                45
+            )
+
         except:
+
             font = ImageFont.load_default()
 
         text = fallback_text or "Scene"
 
         words = text.split()
-        lines, line = [], ""
 
-        for w in words:
-            if len(line + w) < 20:
-                line += w + " "
+        lines = []
+
+        line = ""
+
+        for word in words:
+
+            if len(line + word) < 20:
+
+                line += word + " "
+
             else:
-                lines.append(line.strip())
-                line = w + " "
-        lines.append(line.strip())
+
+                lines.append(
+                    line.strip()
+                )
+
+                line = word + " "
+
+        lines.append(
+            line.strip()
+        )
 
         lines = lines[:4]
-        y = VIDEO_SIZE[1] // 2 - 100
 
-        for i, l in enumerate(lines):
-            bbox = draw.textbbox((0, 0), l, font=font)
-            w = bbox[2] - bbox[0]
+        y = (
+            VIDEO_SIZE[1] // 2
+            - 100
+        )
+
+        for i, line_text in enumerate(lines):
+
+            bbox = draw.textbbox(
+                (0, 0),
+                line_text,
+                font=font
+            )
+
+            width = (
+                bbox[2]
+                - bbox[0]
+            )
 
             draw.text(
-                ((VIDEO_SIZE[0] - w) // 2, y + i * 60),
-                l,
+                (
+                    (VIDEO_SIZE[0] - width) // 2,
+                    y + i * 60
+                ),
+                line_text,
                 font=font,
                 fill=(255, 255, 255)
             )
 
         img.save(path)
+
         return path
 
     except Exception as e:
-        print("❌ Final fallback failed:", e, flush=True)
+
+        print(
+            "❌ Final fallback failed:",
+            e,
+            flush=True
+        )
+
         return None
 
-# =========================
+
+# ============================================================
 # VOICE
-# =========================
-def generate_voice(text, path):
+# ============================================================
+
+def generate_voice(
+    text,
+    path
+):
 
     async def tts():
+
         communicate = edge_tts.Communicate(
             text=text,
             voice="en-IN-NeerjaNeural",
             rate="-15%"
         )
+
         await communicate.save(path)
 
     for i in range(3):
+
         try:
-            print(f"🎤 Voice attempt {i+1}", flush=True)
+
+            print(
+                f"🎤 Voice attempt {i + 1}",
+                flush=True
+            )
+
             asyncio.run(tts())
+
             return path
+
         except Exception as e:
-            print("⚠️ Voice retry:", e, flush=True)
+
+            print(
+                "⚠️ Voice retry:",
+                e,
+                flush=True
+            )
+
             time.sleep(2)
 
-    print("❌ Voice failed", flush=True)
+    print(
+        "❌ Voice failed",
+        flush=True
+    )
+
     return None
 
-# =========================
+
+# ============================================================
 # SUBTITLE
-# =========================
-def create_subtitle(text, duration):
-    img = Image.new("RGBA", VIDEO_SIZE, (0, 0, 0, 0))
+# ============================================================
+
+def create_subtitle(
+    text,
+    duration
+):
+
+    img = Image.new(
+        "RGBA",
+        VIDEO_SIZE,
+        (0, 0, 0, 0)
+    )
+
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
+
+        font = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            40
+        )
+
     except:
+
         font = ImageFont.load_default()
 
     words = text.split()
-    lines, line = [], ""
 
-    for w in words:
-        if len(line + w) < 22:
-            line += w + " "
+    lines = []
+
+    line = ""
+
+    for word in words:
+
+        if len(line + word) < 22:
+
+            line += word + " "
+
         else:
-            lines.append(line.strip())
-            line = w + " "
-    lines.append(line.strip())
+
+            lines.append(
+                line.strip()
+            )
+
+            line = word + " "
+
+    lines.append(
+        line.strip()
+    )
 
     lines = lines[-3:]
+
     y = VIDEO_SIZE[1] - 220
 
-    for i, l in enumerate(lines):
-        bbox = draw.textbbox((0, 0), l, font=font)
-        w = bbox[2] - bbox[0]
+    for i, line_text in enumerate(lines):
+
+        bbox = draw.textbbox(
+            (0, 0),
+            line_text,
+            font=font
+        )
+
+        width = (
+            bbox[2]
+            - bbox[0]
+        )
 
         draw.text(
-            ((VIDEO_SIZE[0] - w) // 2, y + i * 60),
-            l,
+            (
+                (VIDEO_SIZE[0] - width) // 2,
+                y + i * 60
+            ),
+            line_text,
             font=font,
             fill=(255, 255, 0),
             stroke_width=3,
             stroke_fill=(0, 0, 0)
         )
 
-    return ImageClip(np.array(img)).set_duration(duration)
+    return ImageClip(
+        np.array(img)
+    ).set_duration(duration)
 
-# =========================
-# CLIP
-# =========================
-def create_fullscreen_clip(image_path, duration, index):
+
+# ============================================================
+# FULLSCREEN IMAGE CLIP
+# ============================================================
+
+def create_fullscreen_clip(
+    image_path,
+    duration,
+    index
+):
+
     if image_path is None:
-        return ColorClip(VIDEO_SIZE, color=(0, 0, 0)).set_duration(duration)
 
-    clip = ImageClip(image_path)
-    clip = clip.resize(height=VIDEO_SIZE[1])
+        return ColorClip(
+            VIDEO_SIZE,
+            color=(0, 0, 0)
+        ).set_duration(duration)
+
+    clip = ImageClip(
+        image_path
+    )
+
+    clip = clip.resize(
+        height=VIDEO_SIZE[1]
+    )
 
     if clip.w < VIDEO_SIZE[0]:
-        clip = clip.resize(width=VIDEO_SIZE[0])
+
+        clip = clip.resize(
+            width=VIDEO_SIZE[0]
+        )
 
     clip = clip.crop(
         x_center=clip.w / 2,
@@ -311,61 +680,210 @@ def create_fullscreen_clip(image_path, duration, index):
         height=VIDEO_SIZE[1]
     )
 
-    clip = clip.set_duration(duration)
-    return fadein(clip, 0.8).fx(fadeout, 0.8)
+    clip = clip.set_duration(
+        duration
+    )
 
-# =========================
-# SCENE
-# =========================
-def create_scene(scene, index):
-    print(f"\n🎬 Scene {index}", flush=True)
+    return fadein(
+        clip,
+        0.8
+    ).fx(
+        fadeout,
+        0.8
+    )
 
-    audio_path = f"audio/a_{index}.mp3"
-    voice = generate_voice(scene["text"], audio_path)
 
-    audio = AudioFileClip(audio_path) if voice else None
-    duration = max(audio.duration if audio else 0, MIN_DURATION)
+# ============================================================
+# CREATE SCENE
+# ============================================================
 
-    img_path = f"images/s_{index}.png"
-    img = generate_image(scene["image_prompt"], img_path, scene["text"])
+def create_scene(
+    scene,
+    index
+):
 
-    base = create_fullscreen_clip(img, duration, index)
-    subtitle = create_subtitle(scene["text"], duration)
+    scene_number = scene.get(
+        "scene_number",
+        index + 1
+    )
+
+    print(
+        f"\n🎬 Scene {scene_number}",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # Text comes directly from MongoDB
+    # --------------------------------------------------------
+
+    text = scene["text"]
+
+    # --------------------------------------------------------
+    # Image prompt comes directly from MongoDB
+    # --------------------------------------------------------
+
+    image_prompt = scene["image_prompt"]
+
+    print(
+        f"📝 Text: {text[:100]}...",
+        flush=True
+    )
+
+    print(
+        f"🎨 Image prompt: {image_prompt[:100]}...",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # Generate voice
+    # --------------------------------------------------------
+
+    audio_path = (
+        f"audio/a_{index + 1}.mp3"
+    )
+
+    voice = generate_voice(
+        text,
+        audio_path
+    )
+
+    audio = (
+        AudioFileClip(audio_path)
+        if voice
+        else None
+    )
+
+    duration = max(
+        audio.duration
+        if audio
+        else 0,
+        MIN_DURATION
+    )
+
+    # --------------------------------------------------------
+    # Generate image
+    # --------------------------------------------------------
+
+    img_path = (
+        f"images/s_{index + 1}.png"
+    )
+
+    img = generate_image(
+        image_prompt,
+        img_path,
+        text
+    )
+
+    # --------------------------------------------------------
+    # Create image clip
+    # --------------------------------------------------------
+
+    base = create_fullscreen_clip(
+        img,
+        duration,
+        index
+    )
+
+    # --------------------------------------------------------
+    # Create subtitle
+    # --------------------------------------------------------
+
+    subtitle = create_subtitle(
+        text,
+        duration
+    )
 
     final = CompositeVideoClip(
-        [base, subtitle.set_position(("center", "bottom"))],
+        [
+            base,
+            subtitle.set_position(
+                ("center", "bottom")
+            )
+        ],
         size=VIDEO_SIZE
     )
 
+    # --------------------------------------------------------
+    # Add audio
+    # --------------------------------------------------------
+
     if audio:
+
         if audio.duration < duration:
+
             silence = AudioArrayClip(
-                np.zeros((int(44100 * (duration - audio.duration)), 2)),
+                np.zeros(
+                    (
+                        int(
+                            44100
+                            * (
+                                duration
+                                - audio.duration
+                            )
+                        ),
+                        2
+                    )
+                ),
                 fps=44100
             )
-            audio = concatenate_audioclips([audio, silence])
-        else:
-            audio = audio.subclip(0, duration)
 
-        final = final.set_audio(audio)
+            audio = concatenate_audioclips(
+                [
+                    audio,
+                    silence
+                ]
+            )
+
+        else:
+
+            audio = audio.subclip(
+                0,
+                duration
+            )
+
+        final = final.set_audio(
+            audio
+        )
 
     return final
 
-# =========================
+
+# ============================================================
 # BUILD VIDEO
-# =========================
-def build_video(scenes):
+# ============================================================
+
+def build_video(
+    scenes
+):
+
     clips = []
 
-    for i, s in enumerate(scenes):
-        clip = create_scene(s, i)
+    for i, scene in enumerate(scenes):
+
+        clip = create_scene(
+            scene,
+            i
+        )
 
         if i > 0:
-            clip = clip.crossfadein(1.0)
+
+            clip = clip.crossfadein(
+                1.0
+            )
 
         clips.append(clip)
 
-    final = concatenate_videoclips(clips, method="compose", padding=-1)
+    if not clips:
+
+        raise ValueError(
+            "❌ No video clips generated"
+        )
+
+    final = concatenate_videoclips(
+        clips,
+        method="compose",
+        padding=-1
+    )
 
     final.write_videofile(
         "final_video.mp4",
@@ -375,10 +893,52 @@ def build_video(scenes):
         threads=2
     )
 
-# =========================
-# RUN
-# =========================
-scenes = get_story()
-print("✅ Scenes generated:", len(scenes), flush=True)
 
-build_video(scenes)
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    print(
+        "🚀 Starting SmartStudyLab video generator...",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # Get everything from MongoDB
+    # --------------------------------------------------------
+
+    story, scenes = get_story_from_mongodb()
+
+    # --------------------------------------------------------
+    # Title also comes from MongoDB
+    # --------------------------------------------------------
+
+    title = story.get(
+        "title",
+        "Untitled Story"
+    )
+
+    print(
+        f"\n📖 TITLE: {title}",
+        flush=True
+    )
+
+    print(
+        f"🎬 SCENES: {len(scenes)}",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # Build video
+    # --------------------------------------------------------
+
+    build_video(
+        scenes
+    )
+
+    print(
+        "\n✅ Video generation completed!",
+        flush=True
+    )

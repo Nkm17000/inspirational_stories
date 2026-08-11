@@ -2,9 +2,11 @@ name: Generate Video
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
+
   schedule:
     - cron: "0 3 * * *"
 
@@ -13,64 +15,52 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write   # ✅ required for push
+      contents: read
 
     env:
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
 
     steps:
-      # ✅ Checkout (FULL HISTORY REQUIRED)
+
+      # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-          fetch-depth: 0   # ✅ IMPORTANT
 
-      # ✅ Setup Python
+      # Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-          cache: 'pip'
+          python-version: "3.13"
+          cache: "pip"
 
-      # ✅ Install ffmpeg
+      # Install ffmpeg
       - name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      # ✅ Install dependencies
+      # Install dependencies
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ✅ Validate secret
-      - name: Validate GROQ API Key
+      # Validate MongoDB connection string
+      - name: Validate MongoDB URI
         run: |
-          if [ -z "$GROQ_API_KEY" ]; then
-            echo "❌ GROQ_API_KEY is EMPTY"
+          if [ -z "$MONGODB_URI" ]; then
+            echo "❌ MONGODB_URI is EMPTY"
             exit 1
           else
-            echo "✅ GROQ_API_KEY is set"
+            echo "✅ MONGODB_URI is configured"
           fi
 
-      # ✅ Run script (this updates counter.json)
+      # Run video generator
       - name: Run Video Generator
-        run: python script.py
-
-      # ✅ 🔥 COMMIT + PUSH COUNTER (CRITICAL FIX)
-      - name: Commit counter update
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
+          python script.py
 
-          git add counter.json
-
-          git diff --cached --quiet || git commit -m "🔁 update counter"
-
-          git push origin HEAD:main
-
-      # ✅ Upload video
+      # Upload generated video
       - name: Upload video
         uses: actions/upload-artifact@v4
         with:
