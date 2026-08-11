@@ -1,6 +1,6 @@
 moviepy==1.0.3
-pillow==9.5.0
-numpy
+Pillow==9.5.0
+numpy==1.24.4
 requests
 edge-tts
 nest-asyncio
@@ -10,3 +10,4 @@ proglog
 tqdm
 decorator
 pymongo[srv]
+groq
