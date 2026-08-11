@@ -619,38 +619,88 @@ def create_subtitle(
     word_timings
 ):
     """
-    TRUE PROGRESSIVE / RUNNING SUBTITLES.
+    PROGRESSIVE WORD-BY-WORD SUBTITLES
 
-    The subtitle is updated at every spoken word boundary.
+    The subtitle follows the Edge-TTS WordBoundary timings.
 
-    Example:
+    Example for one scene:
 
-        Raju
-        Raju went
-        Raju went to
-        Raju went to the
-        Raju went to the fields
+        Deep
+        Deep inside
+        Deep inside a
+        Deep inside a vast
+        Deep inside a vast
+        mountain forest,
 
-    Once the window reaches 5 words, it rolls forward:
+    As more words are spoken, the complete spoken text keeps
+    building progressively. When the text becomes longer than
+    3 lines, only the oldest lines scroll out.
 
-        went to the fields and
-        to the fields and started
-        the fields and started working
-
-    This keeps the complete narration readable without showing
-    only the last few words.
+    IMPORTANT:
+    - No fixed 5-word window.
+    - Every spoken word is added to the subtitle.
+    - The subtitle changes exactly at the next spoken word.
+    - The complete scene narration is progressively displayed
+      during that image's duration.
     """
 
     FONT_SIZE = 40
-    MAX_CHARS_PER_LINE = 22
+    MAX_CHARS_PER_LINE = 24
     MAX_LINES = 3
-    MAX_VISIBLE_WORDS = 5
+    LINE_HEIGHT = 60
 
     # ------------------------------------------------------------
-    # Fallback when Edge-TTS timings are unavailable
+    # Load font
+    # ------------------------------------------------------------
+
+    try:
+        font = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            FONT_SIZE
+        )
+    except:
+        font = ImageFont.load_default()
+
+    # ------------------------------------------------------------
+    # Helper: wrap spoken words into maximum 3 lines
+    # ------------------------------------------------------------
+
+    def wrap_words(words):
+        lines = []
+        line = ""
+
+        for word in words:
+
+            candidate = (
+                f"{line} {word}".strip()
+            )
+
+            if len(candidate) <= MAX_CHARS_PER_LINE:
+                line = candidate
+
+            else:
+
+                if line:
+                    lines.append(line)
+
+                line = word
+
+        if line:
+            lines.append(line)
+
+        # Keep only the latest 3 lines once the
+        # complete sentence becomes longer.
+        if len(lines) > MAX_LINES:
+            lines = lines[-MAX_LINES:]
+
+        return lines
+
+    # ------------------------------------------------------------
+    # Fallback if Edge-TTS timings are unavailable
     # ------------------------------------------------------------
 
     if not word_timings:
+
         print(
             "⚠️ Word timings unavailable - "
             "using static subtitle",
@@ -665,34 +715,15 @@ def create_subtitle(
 
         draw = ImageDraw.Draw(img)
 
-        try:
-            font = ImageFont.truetype(
-                "DejaVuSans-Bold.ttf",
-                FONT_SIZE
-            )
-        except:
-            font = ImageFont.load_default()
+        lines = wrap_words(text.split())
 
-        words = text.split()
-        lines = []
-        line = ""
+        block_height = len(lines) * LINE_HEIGHT
 
-        for word in words:
-            candidate = f"{line} {word}".strip()
-
-            if len(candidate) <= MAX_CHARS_PER_LINE:
-                line = candidate
-            else:
-                if line:
-                    lines.append(line)
-                line = word
-
-        if line:
-            lines.append(line)
-
-        lines = lines[-MAX_LINES:]
-
-        y = VIDEO_SIZE[1] - 220
+        y = (
+            VIDEO_SIZE[1]
+            - 180
+            - block_height
+        )
 
         for line_index, line_text in enumerate(lines):
 
@@ -702,12 +733,14 @@ def create_subtitle(
                 font=font
             )
 
-            width = bbox[2] - bbox[0]
+            width = (
+                bbox[2] - bbox[0]
+            )
 
             draw.text(
                 (
                     (VIDEO_SIZE[0] - width) // 2,
-                    y + line_index * 60
+                    y + line_index * LINE_HEIGHT
                 ),
                 line_text,
                 font=font,
@@ -721,7 +754,7 @@ def create_subtitle(
         ).set_duration(duration)
 
     # ------------------------------------------------------------
-    # Clean and normalize timings
+    # Clean and normalize Edge-TTS timings
     # ------------------------------------------------------------
 
     cleaned = []
@@ -767,36 +800,35 @@ def create_subtitle(
         )
 
     # ------------------------------------------------------------
-    # Important:
-    # Edge-TTS timings are the source of truth.
-    #
-    # We create ONE subtitle state for every spoken word.
-    # Therefore the subtitle changes exactly when the next word
-    # starts speaking.
+    # PROGRESSIVE SUBTITLE
     # ------------------------------------------------------------
 
     subtitle_clips = []
 
-    for word_index in range(len(cleaned)):
+    spoken_words = []
 
-        current = cleaned[word_index]
+    for word_index, current in enumerate(cleaned):
+
+        word = current["word"]
 
         start_time = current["start"]
 
-        # The subtitle state lasts until the next spoken word.
+        # Add the newly spoken word to the running sentence.
+        spoken_words.append(word)
+
+        # Subtitle remains visible until the next spoken word.
         if word_index + 1 < len(cleaned):
-            next_start = cleaned[
+
+            end_time = cleaned[
                 word_index + 1
             ]["start"]
 
-            end_time = next_start
-
         else:
-            # Last word remains visible until the actual
-            # audio/scene duration.
+
+            # Last spoken word remains visible until
+            # the end of the image/scene.
             end_time = duration
 
-        # Clamp to actual scene duration.
         start_time = max(
             0.0,
             min(start_time, duration)
@@ -811,64 +843,32 @@ def create_subtitle(
             continue
 
         # --------------------------------------------------------
-        # Rolling window.
+        # Build subtitle from ALL words spoken so far.
         #
-        # Before 5 words:
-        #   word 1
-        #   word 1 + word 2
-        #   ...
+        # Example:
         #
-        # After 5 words:
-        #   word 2 ... word 6
-        #   word 3 ... word 7
+        # Word 1:
+        # Deep
+        #
+        # Word 2:
+        # Deep inside
+        #
+        # Word 3:
+        # Deep inside a
+        #
+        # Word 4:
+        # Deep inside a vast
+        #
+        # Later:
+        # Deep inside a vast mountain forest,
+        # a lonely woodcutter named Arjun
+        # lived in a small cabin
+        #
+        # Once 3 lines are full, the oldest line
+        # naturally scrolls away.
         # --------------------------------------------------------
 
-        window_start = max(
-            0,
-            word_index - MAX_VISIBLE_WORDS + 1
-        )
-
-        visible_words = cleaned[
-            window_start:word_index + 1
-        ]
-
-        visible_text = " ".join(
-            item["word"]
-            for item in visible_words
-        )
-
-        # --------------------------------------------------------
-        # Wrap visible words into up to 3 lines.
-        # --------------------------------------------------------
-
-        lines = []
-        line = ""
-
-        for word in visible_text.split():
-
-            candidate = (
-                f"{line} {word}".strip()
-            )
-
-            if len(candidate) <= MAX_CHARS_PER_LINE:
-                line = candidate
-
-            else:
-                if line:
-                    lines.append(line)
-
-                line = word
-
-        if line:
-            lines.append(line)
-
-        # Safety: maximum 3 lines.
-        # Keep the newest content if wrapping produces >3 lines.
-        lines = lines[-MAX_LINES:]
-
-        # --------------------------------------------------------
-        # Render subtitle frame
-        # --------------------------------------------------------
+        lines = wrap_words(spoken_words)
 
         img = Image.new(
             "RGBA",
@@ -878,17 +878,7 @@ def create_subtitle(
 
         draw = ImageDraw.Draw(img)
 
-        try:
-            font = ImageFont.truetype(
-                "DejaVuSans-Bold.ttf",
-                FONT_SIZE
-            )
-        except:
-            font = ImageFont.load_default()
-
-        # Calculate block height dynamically.
-        line_height = 60
-        block_height = len(lines) * line_height
+        block_height = len(lines) * LINE_HEIGHT
 
         y = (
             VIDEO_SIZE[1]
@@ -904,12 +894,14 @@ def create_subtitle(
                 font=font
             )
 
-            width = bbox[2] - bbox[0]
+            width = (
+                bbox[2] - bbox[0]
+            )
 
             draw.text(
                 (
                     (VIDEO_SIZE[0] - width) // 2,
-                    y + line_index * line_height
+                    y + line_index * LINE_HEIGHT
                 ),
                 line_text,
                 font=font,
@@ -917,6 +909,14 @@ def create_subtitle(
                 stroke_width=3,
                 stroke_fill=(0, 0, 0)
             )
+
+        print(
+            f"📺 Subtitle "
+            f"{word_index + 1}/{len(cleaned)}: "
+            f"{' '.join(spoken_words)} "
+            f"[{start_time:.2f}s - {end_time:.2f}s]",
+            flush=True
+        )
 
         subtitle_clip = (
             ImageClip(np.array(img))
@@ -931,6 +931,7 @@ def create_subtitle(
         )
 
     if not subtitle_clips:
+
         return ImageClip(
             np.zeros(
                 (
@@ -946,6 +947,7 @@ def create_subtitle(
         subtitle_clips,
         size=VIDEO_SIZE
     ).set_duration(duration)
+
 
 # ============================================================
 # FULLSCREEN IMAGE CLIP
