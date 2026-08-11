@@ -43,21 +43,20 @@ jobs:
       TITLE_CARD_DURATION: "4"
 
       # --------------------------------------------------
-      # IMPORTANT:
-      # Supplied title-page design
+      # Title page template
       # --------------------------------------------------
       TITLE_TEMPLATE_PATH: "assets/title_page_template.png"
 
     steps:
 
       # ==================================================
-      # Checkout
+      # 1. Checkout
       # ==================================================
       - name: Checkout code
         uses: actions/checkout@v4
 
       # ==================================================
-      # Setup Python
+      # 2. Setup Python
       # ==================================================
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -66,15 +65,20 @@ jobs:
           cache: "pip"
 
       # ==================================================
-      # Verify Python
+      # 3. Verify Python
       # ==================================================
       - name: Verify Python
         run: |
+          echo "=========================================="
+          echo "Python"
+          echo "=========================================="
+
           python --version
           python -m pip --version
+          pwd
 
       # ==================================================
-      # Install system dependencies
+      # 4. Install system dependencies
       # ==================================================
       - name: Install system dependencies
         run: |
@@ -89,7 +93,19 @@ jobs:
           fc-cache -f -v
 
       # ==================================================
-      # Verify Hindi fonts
+      # 5. Verify FFmpeg
+      # ==================================================
+      - name: Verify FFmpeg
+        run: |
+          echo "=========================================="
+          echo "FFmpeg"
+          echo "=========================================="
+
+          ffmpeg -version | head -5
+          ffprobe -version | head -5
+
+      # ==================================================
+      # 6. Verify Hindi fonts
       # ==================================================
       - name: Verify Hindi fonts
         run: |
@@ -97,6 +113,8 @@ jobs:
           echo "Checking Devanagari fonts"
           echo "=========================================="
 
+          echo ""
+          echo "Available Hindi fonts:"
           fc-list :lang=hi family file | head -30
 
           echo ""
@@ -106,7 +124,7 @@ jobs:
             | head -30
 
       # ==================================================
-      # Verify project structure
+      # 7. Verify project structure
       # ==================================================
       - name: Verify project structure
         run: |
@@ -115,66 +133,96 @@ jobs:
           echo "=========================================="
 
           echo ""
+          echo "Current directory:"
+          pwd
+
+          echo ""
           echo "Root files:"
           ls -lah
 
           echo ""
+          echo "Python files:"
+          find . -maxdepth 3 -type f -name "*.py" -print | sort
+
+          echo ""
           echo "smart_video package:"
-          ls -lah smart_video
+
+          if [ -d "smart_video" ]; then
+            ls -lah smart_video
+          else
+            echo "⚠️ smart_video directory not found"
+            echo "This is okay only if your project does not use smart_video."
+          fi
 
           echo ""
           echo "Assets:"
-          ls -lah assets || true
+
+          if [ -d "assets" ]; then
+            ls -lah assets
+          else
+            echo "⚠️ assets directory not found"
+          fi
 
       # ==================================================
-      # Verify logo
+      # 8. Verify logo
       # ==================================================
       - name: Verify Smart Learning Lab logo
         run: |
+          echo "=========================================="
+          echo "Checking logo"
+          echo "=========================================="
+
           if [ -f "$LOGO_PATH" ]; then
             echo "✅ logo.png found"
             ls -lh "$LOGO_PATH"
+            file "$LOGO_PATH"
           else
             echo "❌ logo.png NOT found"
             echo ""
-            echo "The video generator requires:"
-            echo "  logo.png"
-            echo ""
-            echo "Place logo.png in the repository root."
+            echo "Expected:"
+            echo "  $LOGO_PATH"
             exit 1
           fi
 
       # ==================================================
-      # Verify title-page template
+      # 9. Verify title-page template
       # ==================================================
       - name: Verify title page template
         run: |
-          echo "Checking title page template..."
+          echo "=========================================="
+          echo "Checking title page template"
+          echo "=========================================="
 
           if [ -f "$TITLE_TEMPLATE_PATH" ]; then
             echo "✅ Title page template found"
             ls -lh "$TITLE_TEMPLATE_PATH"
+            file "$TITLE_TEMPLATE_PATH"
           else
             echo "❌ Title page template NOT found"
             echo ""
-            echo "Expected file:"
+            echo "Expected:"
             echo "  $TITLE_TEMPLATE_PATH"
             echo ""
-            echo "Please put your supplied title-page image at:"
-            echo "  assets/title_page_template.png"
+            echo "Current assets directory:"
+            ls -lah assets 2>/dev/null || true
             exit 1
           fi
 
       # ==================================================
-      # Install Python dependencies
+      # 10. Install Python dependencies
       # ==================================================
       - name: Install dependencies
         run: |
+          echo "=========================================="
+          echo "Installing Python dependencies"
+          echo "=========================================="
+
           python -m pip install --upgrade pip
+
           python -m pip install -r requirements.txt
 
       # ==================================================
-      # Verify Python packages
+      # 11. Verify Python packages
       # ==================================================
       - name: Verify Python packages
         run: |
@@ -188,38 +236,66 @@ jobs:
           import moviepy
           import qrcode
 
+          from PIL import Image
+
           print("==========================================")
           print("Python packages verified")
           print("==========================================")
 
-          print("edge_tts      :", "OK")
-          print("pymongo       :", "OK")
-          print("requests      :", "OK")
-          print("numpy         :", "OK")
-          print("nest_asyncio  :", "OK")
-          print("Pillow        :", "OK")
-          print("moviepy       :", moviepy.__version__)
-          print("qrcode        :", "OK")
+          print("edge_tts     :", "OK")
+          print("pymongo      :", "OK")
+          print("requests     :", "OK")
+          print("numpy        :", "OK")
+          print("nest_asyncio :", "OK")
+          print("Pillow       :", PIL.__version__)
+          print("MoviePy      :", moviepy.__version__)
+          print("qrcode       :", "OK")
+
+          print("")
+          print("Pillow compatibility:")
+          print(
+              "Image.ANTIALIAS:",
+              hasattr(Image, "ANTIALIAS")
+          )
+
+          print(
+              "Image.Resampling:",
+              hasattr(Image, "Resampling")
+          )
+
+          print("==========================================")
           PY
 
       # ==================================================
-      # Verify Edge TTS
+      # 12. Verify Edge TTS
       # ==================================================
       - name: Verify Edge TTS
         run: |
+          echo "=========================================="
+          echo "Edge TTS"
+          echo "=========================================="
+
           edge-tts --version
 
       # ==================================================
-      # Test Hindi TTS
+      # 13. Test Hindi TTS
       # ==================================================
       - name: Test Hindi TTS
         run: |
+          echo "=========================================="
+          echo "Testing Hindi TTS"
+          echo "=========================================="
+
           python - <<'PY'
           import asyncio
           import edge_tts
 
           async def main():
-              text = "एक विशाल पहाड़ी जंगल में अर्जुन नाम का एक लकड़हारा रहता था।"
+
+              text = (
+                  "एक विशाल पहाड़ी जंगल में "
+                  "अर्जुन नाम का एक लकड़हारा रहता था।"
+              )
 
               communicate = edge_tts.Communicate(
                   text=text,
@@ -234,19 +310,32 @@ jobs:
           print("✅ Hindi TTS test completed successfully")
           PY
 
+          if [ ! -s "test_hindi.mp3" ]; then
+            echo "❌ Hindi TTS file was not created"
+            exit 1
+          fi
+
           ls -lh test_hindi.mp3
 
       # ==================================================
-      # Test English TTS
+      # 14. Test English TTS
       # ==================================================
       - name: Test English TTS
         run: |
+          echo "=========================================="
+          echo "Testing English TTS"
+          echo "=========================================="
+
           python - <<'PY'
           import asyncio
           import edge_tts
 
           async def main():
-              text = "Deep inside a vast mountain forest, Arjun lived in a small cabin."
+
+              text = (
+                  "Deep inside a vast mountain forest, "
+                  "Arjun lived in a small cabin."
+              )
 
               communicate = edge_tts.Communicate(
                   text=text,
@@ -261,13 +350,22 @@ jobs:
           print("✅ English TTS test completed successfully")
           PY
 
+          if [ ! -s "test_english.mp3" ]; then
+            echo "❌ English TTS file was not created"
+            exit 1
+          fi
+
           ls -lh test_english.mp3
 
       # ==================================================
-      # Validate MongoDB URI
+      # 15. Validate MongoDB URI
       # ==================================================
       - name: Validate MongoDB URI
         run: |
+          echo "=========================================="
+          echo "Checking MongoDB"
+          echo "=========================================="
+
           if [ -z "$MONGODB_URI" ]; then
             echo "❌ MONGODB_URI is EMPTY"
             exit 1
@@ -276,36 +374,47 @@ jobs:
           fi
 
       # ==================================================
-      # Validate Groq API key
+      # 16. Validate Groq API key
       # ==================================================
       - name: Validate Groq API key
         run: |
+          echo "=========================================="
+          echo "Checking Groq"
+          echo "=========================================="
+
           if [ -z "$GROQ_API_KEY" ]; then
             echo "⚠️ GROQ_API_KEY is EMPTY"
-            echo "The current video generation script does not directly"
-            echo "require Groq during video rendering."
+            echo "Video rendering does not directly require Groq."
           else
             echo "✅ GROQ_API_KEY is configured"
           fi
 
       # ==================================================
-      # Validate CTA URL
+      # 17. Validate CTA
       # ==================================================
       - name: Validate CTA URL
         run: |
+          echo "=========================================="
+          echo "Checking CTA URL"
+          echo "=========================================="
+
           if [ -z "$CTA_URL" ]; then
             echo "❌ CTA_URL is EMPTY"
             exit 1
-          else
-            echo "✅ CTA_URL configured"
-            echo "CTA page: $CTA_URL"
           fi
 
+          echo "✅ CTA_URL configured"
+          echo "CTA page: $CTA_URL"
+
       # ==================================================
-      # Validate title template configuration
+      # 18. Validate title configuration
       # ==================================================
       - name: Validate title page configuration
         run: |
+          echo "=========================================="
+          echo "Title page configuration"
+          echo "=========================================="
+
           echo "TITLE_TEMPLATE_PATH=$TITLE_TEMPLATE_PATH"
           echo "TITLE_CARD_DURATION=$TITLE_CARD_DURATION"
 
@@ -317,29 +426,43 @@ jobs:
           echo "✅ Title page configuration valid"
 
       # ==================================================
-      # Python syntax validation
+      # 19. Python syntax validation
       # ==================================================
       - name: Validate Python source
         run: |
-          echo "Checking Python syntax..."
+          echo "=========================================="
+          echo "Python syntax validation"
+          echo "=========================================="
 
           python -m py_compile main.py
 
-          for file in smart_video/*.py; do
-            echo "Checking $file"
-            python -m py_compile "$file"
-          done
+          if [ -d "smart_video" ]; then
+
+            for file in smart_video/*.py; do
+
+              if [ -f "$file" ]; then
+                echo "Checking $file"
+                python -m py_compile "$file"
+              fi
+
+            done
+
+          fi
 
           echo "✅ All Python files passed syntax validation"
 
       # ==================================================
-      # Run modular video generator
+      # 20. Run video generator
       # ==================================================
       - name: Run Video Generator
         run: |
           echo "=========================================="
           echo "Starting Smart Video Generator"
           echo "=========================================="
+
+          echo ""
+          echo "Working directory:"
+          pwd
 
           echo ""
           echo "Title template:"
@@ -352,7 +475,7 @@ jobs:
           python main.py
 
       # ==================================================
-      # Verify generated video
+      # 21. Verify generated video
       # ==================================================
       - name: Verify generated video
         run: |
@@ -360,8 +483,35 @@ jobs:
           echo "Checking generated video"
           echo "=========================================="
 
+          echo ""
+          echo "Current directory:"
+          pwd
+
+          echo ""
+          echo "Root directory after generation:"
+          ls -lah
+
+          echo ""
+          echo "Searching for MP4 files:"
+          find "$GITHUB_WORKSPACE" \
+            -type f \
+            -name "*.mp4" \
+            -print
+
+          echo ""
+          echo "Checking final_video.mp4..."
+
           if [ ! -f "final_video.mp4" ]; then
+
             echo "❌ final_video.mp4 was not generated"
+
+            echo ""
+            echo "All generated files:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 5 \
+              -type f \
+              | sort
+
             exit 1
           fi
 
@@ -370,20 +520,32 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Video generated successfully"
+          VIDEO_SIZE=$(stat -c%s "final_video.mp4")
+
+          echo ""
+          echo "✅ final_video.mp4 generated"
+          echo "Size: $VIDEO_SIZE bytes"
 
           ls -lh final_video.mp4
 
           echo ""
+          echo "File information:"
+          file final_video.mp4
+
+          echo ""
           echo "Video information:"
+
           ffprobe \
             -v error \
-            -show_entries format=duration,size \
+            -show_entries \
+            format=duration,size \
+            -show_entries \
+            stream=codec_name,width,height \
             -of default=noprint_wrappers=1 \
-            final_video.mp4 || true
+            final_video.mp4
 
       # ==================================================
-      # Upload generated video
+      # 22. Upload final video
       # ==================================================
       - name: Upload video
         uses: actions/upload-artifact@v4
@@ -394,7 +556,7 @@ jobs:
           retention-days: 7
 
       # ==================================================
-      # Upload generated assets
+      # 23. Upload generated assets
       # ==================================================
       - name: Upload generated assets
         uses: actions/upload-artifact@v4
