@@ -326,7 +326,8 @@ def upload_video():
 
     data = {
         "title": title,
-        "description": description
+        "description": description,
+        "published": True
     }
 
     try:
