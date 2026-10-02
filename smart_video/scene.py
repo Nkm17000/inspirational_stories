@@ -24,25 +24,20 @@ from .subtitles import create_subtitle
 def _build_consistent_image_prompt(
     scene_text,
     sub_text,
-    base_prompt,
+    scene_prompt,
     characters,
     style,
     scene_number,
     prompt_index,
 ):
+    """Build the exact self-contained prompt used for every image request.
+
+    The character bible is sent with every independent API call. A character
+    ID is an application-level consistency key; the actual physical
+    description is also included because the image model does not remember
+    previous API calls.
     """
-    Build a completely self-contained prompt for EACH image request.
-
-    The image API is called one image at a time, so every request receives
-    the full character bible and the full scene context. This prevents the
-    model from relying on a previous request/image for identity continuity.
-
-    Character details are intentionally appended LAST, as requested.
-    """
-    base_prompt = (base_prompt or "").strip()
-
-    # Remove the old broken placeholder from the generated JSON prompt.
-    base_prompt = base_prompt.replace("MAIN CHARACTER — .", "").strip()
+    scene_prompt = (scene_prompt or "").strip()
 
     parts = [
         "Create one standalone image for this exact story moment.",
@@ -51,56 +46,55 @@ def _build_consistent_image_prompt(
     ]
 
     if sub_text:
-        parts.append(
-            f"EXACT SUB-IMAGE MOMENT: {sub_text}"
-        )
+        parts.append(f"SUB-IMAGE LABEL: {sub_text}")
 
-    if base_prompt:
-        parts.append(
-            f"VISUAL DIRECTION: {base_prompt}"
-        )
+    if scene_prompt:
+        parts.append(f"SCENE: {scene_prompt}")
 
     if style:
-        parts.append(
-            f"STORY VISUAL STYLE: {style}."
-        )
+        parts.append(f"STYLE: {style}.")
 
-    parts.append(
-        "SYNC REQUIREMENT: The image must represent only the exact moment "
-        "described above while remaining visually consistent with the full "
-        "scene. Keep the same time-of-day, location, emotional progression, "
-        "props and action context when applicable. Do not invent a different "
-        "story event. Do not add characters who are not relevant to this moment."
-    )
-
-    # IMPORTANT: Character bible is always the LAST part of the prompt.
     character_lines = []
     if isinstance(characters, dict):
         for role, details in characters.items():
             role_name = str(role).strip().upper()
-            if isinstance(details, str) and details.strip():
+            if isinstance(details, dict):
+                character_id = str(details.get("id", "")).strip()
+                name = str(details.get("name", role_name)).strip()
+                description = str(details.get("description", "")).strip()
+                if character_id or description:
+                    character_lines.append(
+                        f"{role_name} CHARACTER ID: {character_id} — "
+                        f"always use the same {name} character. "
+                        f"CHARACTER: {description}"
+                    )
+            elif isinstance(details, str) and details.strip():
+                # Backward compatibility with the older JSON schema.
                 character_lines.append(
-                    f"{role_name} CHARACTER DETAILS: {details.strip()}"
+                    f"{role_name} CHARACTER: {details.strip()}"
                 )
 
     if character_lines:
         parts.append(
-            "FINAL CHARACTER CONSISTENCY BIBLE — ALWAYS APPLY THESE "
-            "CHARACTER DETAILS EXACTLY IN THIS IMAGE. Do not depend on any "
-            "previous or future image. Preserve age, face, skin tone, hair, "
-            "body build, clothing, accessories and identity across every "
-            "sub-image. Only change pose, expression or action when required "
-            "by the exact story moment.\n"
+            "KEEP CHARACTER CONSISTENT: "
+            "Preserve every character's face, age, hairstyle, skin tone, "
+            "body proportions, clothing, accessories and identity across "
+            "every scene. Only change pose, expression and action according "
+            "to the current scene.\n"
             + "\n".join(character_lines)
         )
     else:
         parts.append(
-            "FINAL CHARACTER CONSISTENCY BIBLE — No character details were "
-            "provided in the story JSON; do not invent persistent character "
-            "identities beyond what the exact scene moment requires."
+            "KEEP CHARACTER CONSISTENT: No character bible was provided; "
+            "do not invent persistent character identities."
         )
 
-    return " ".join(parts)
+    parts.append(
+        "FINAL RULES: Show only the current story moment. Maintain location "
+        "and visual continuity. No text, subtitles, captions, logo or watermark."
+    )
+
+    return "\n\n".join(parts)
 
 
 # ============================================================
@@ -507,7 +501,7 @@ def create_scene(
     ):
 
         sub_text = item.get("text", "")
-        base_image_prompt = item["image_prompt"]
+        base_image_prompt = item.get("scene_prompt") or item.get("image_prompt")
 
         if not base_image_prompt:
             raise ValueError(
@@ -518,7 +512,7 @@ def create_scene(
         image_prompt = _build_consistent_image_prompt(
             scene_text=text,
             sub_text=sub_text,
-            base_prompt=base_image_prompt,
+            scene_prompt=base_image_prompt,
             characters=scene.get("characters", {}),
             style=scene.get("style", ""),
             scene_number=scene_number,
@@ -535,8 +529,7 @@ def create_scene(
                 flush=True,
             )
         print(
-            f"      🎨 Final prompt includes full scene + character bible: "
-            f"{image_prompt[-500:]}",
+            "      🎨 Final prompt includes scene + full character bible.",
             flush=True,
         )
 

@@ -1,157 +1,232 @@
-# Smart Video Generator - Modular Version
+# Smart Video Generator - Cloudflare Neuron-Aware Version
 
-This project splits the original single Python script into multiple modules
-without changing the overall processing flow.
+This project generates inspirational story videos from MongoDB story JSON. It uses Cloudflare Workers AI for image generation when the locally tracked daily neuron balance is above the configured safety threshold, then uses Pollinations when the balance is at or below that threshold or when Cloudflare fails.
 
-## Directory structure
+## Provider routing
+
+For every image:
+
+1. Read the persistent UTC-day Cloudflare neuron ledger.
+2. Print the current day's used and remaining neurons.
+3. If **remaining > 200**, try Cloudflare Workers AI.
+4. If **remaining <= 200**, skip Cloudflare and use Pollinations.
+5. If Cloudflare is selected but fails, use Pollinations.
+6. If both AI providers fail, use the local fallback image.
+
+Cloudflare's current Workers AI documentation states that the free allocation is 10,000 neurons per day and resets at 00:00 UTC. Cloudflare's dashboard is authoritative for actual billed usage; the project ledger is a local routing estimate unless an explicit neuron value is returned by the API response.
+
+## Exact final API prompt logging
+
+The exact final prompt assembled by `scene.py` is the prompt passed to the image generator. Before a Cloudflare request, it is appended to:
 
 ```text
-smart_video_generator/
-├── main.py
-├── requirements.txt
-├── README.md
-├── assets/
-│   ├── README.txt
-│   └── title_page_template.png   <-- put your supplied poster here
-├── images/
-├── audio/
-├── output/
-└── smart_video/
-    ├── __init__.py
-    ├── config.py
-    ├── db.py
-    ├── fonts.py
-    ├── image_generator.py
-    ├── voice.py
-    ├── subtitles.py
-    ├── branding.py
-    ├── scene.py
-    ├── end_card.py
-    ├── title_card.py
-    └── video_builder.py
+logs/image_api_prompts_<story_id>.jsonl
 ```
+
+Each record contains:
+
+- timestamp
+- provider
+- image number
+- `final_prompt_sent_to_api`
+
+The same final prompt is also stored in the per-story neuron report under each image's `final_prompt_sent_to_api` field.
+
+## Daily neuron logs
+
+The persistent daily ledger is:
+
+```text
+logs/cloudflare_daily_usage_YYYY-MM-DD.json
+```
+
+The story-level report is:
+
+```text
+logs/neuron_usage_<story_id>.json
+```
+
+The daily ledger survives separate program runs on the same machine/GitHub runner filesystem. If GitHub Actions starts on a fresh runner each day, the local ledger naturally starts at zero for that runner; use Cloudflare's dashboard as the authoritative account-level balance.
+
+## Environment variables
+
+```text
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_IMAGE_MODEL=@cf/black-forest-labs/flux-1-schnell
+CLOUDFLARE_IMAGE_STEPS=1
+CLOUDFLARE_DAILY_NEURON_LIMIT=10000
+CLOUDFLARE_POLLINATIONS_THRESHOLD=200
+CLOUDFLARE_DAILY_USAGE_DIR=logs
+CLOUDFLARE_IMAGE_RETRIES=2
+CLOUDFLARE_IMAGE_TIMEOUT=120
+
+POLLINATIONS_IMAGE_RETRIES=3
+POLLINATIONS_IMAGE_TIMEOUT=30
+
+CLOUDFLARE_BASE_NEURONS_PER_TILE=4.8
+CLOUDFLARE_NEURONS_PER_STEP=9.6
+```
+
+`CLOUDFLARE_POLLINATIONS_THRESHOLD=200` is the requested routing rule. Change it only if you intentionally want a different safety buffer.
+
+## Recommended story JSON format
+
+Use a story-level `characters` dictionary as the character bible. Character physical descriptions must remain in English and should stay unchanged throughout the story. Story title, category, narration, labels and ending message should be Hindi. Image `scene_prompt` values should be English.
+
+```json
+{
+  "story_id": "कहानी_001",
+  "title": "आईने के सामने लिया फैसला",
+  "status": "PENDING",
+  "category": "आत्मविश्वास और जीवन की सीख",
+  "language": "hi",
+  "style": "Cinematic, cartoon-realistic avatar, detailed, natural pose, realistic lighting, soft shadows",
+  "characters": {
+    "MAIN": {
+      "id": "meera123@32",
+      "name": "Meera",
+      "description": "29-year-old Indian girl, medium-brown skin, long black hair tied in a simple braid, dark brown eyes, slim build, wearing a pale-yellow cotton kurta and navy-blue salwar, small silver earrings."
+    },
+    "SUPPORT": {
+      "id": "sarla456@45",
+      "name": "Sarla",
+      "description": "45-year-old Indian woman, warm brown skin, black hair with a few gray strands tied in a bun, medium build, dark brown eyes, wearing a simple maroon sari and thin gold earrings."
+    }
+  },
+  "scenes": [
+    {
+      "scene_number": 1,
+      "text": "मीरा एक छोटे शहर के साधारण घर में रहती थी। उसे चित्र बनाना बहुत पसंद था, लेकिन वह अपने बनाए चित्र किसी को दिखाने से डरती थी।",
+      "sub_image_prompts": [
+        {
+          "text": "मीरा चित्र बनाती हुई",
+          "scene_prompt": "Meera is sitting on a wooden chair inside a simple Indian home, quietly drawing in a sketchbook near a window, looking thoughtful and slightly emotional."
+        },
+        {
+          "text": "मीरा अपना चित्र छिपाती हुई",
+          "scene_prompt": "Meera quietly closes her sketchbook and places it inside a wooden drawer, looking nervous and hesitant, with the same home interior visible around her."
+        }
+      ]
+    },
+    {
+      "scene_number": 2,
+      "text": "अगले दिन सरला ने मीरा से पूछा कि वह अपने चित्र दूसरों को क्यों नहीं दिखाती।",
+      "sub_image_prompts": [
+        {
+          "text": "सरला मीरा से बात करती हुई",
+          "scene_prompt": "Meera is sitting with Sarla in the same simple Indian home, listening carefully as Sarla speaks to her with a warm encouraging expression."
+        },
+        {
+          "text": "मीरा आत्मविश्वास से मुस्कुराती हुई",
+          "scene_prompt": "Meera stands near the window holding her sketchbook, looking calmer and more confident after speaking with Sarla."
+        }
+      ]
+    }
+  ],
+  "ending_message": "कभी-कभी सबसे बड़ा कदम दुनिया के सामने नहीं, बल्कि अपने डर के सामने उठाना पड़ता है।",
+  "voiceover_style": "warm emotional Hindi voice",
+  "music_style": "soft cinematic inspirational music",
+  "cta": "ऐसी प्रेरणादायक कहानियों के लिए हमें फॉलो करें।"
+}
+```
+
+## JSON rules for future story generation
+
+- `story_id`: unique for every story.
+- `status`: always `PENDING` before processing.
+- `title`, `category`, scene `text`, `text` labels and `ending_message`: Hindi.
+- Character `id`, `name` and `description`: English. Keep character IDs stable and unique.
+- `description`: English, detailed enough to preserve face, age, hair, skin tone, body proportions, clothing and accessories.
+- `style`: English.
+- `scene_prompt`: English.
+- Do not paste the complete character description into every `scene_prompt`; Python adds it automatically.
+- Every independent image request receives the character bible again, so it does not depend on the previous API request remembering the character.
+- Reuse the same character ID and description whenever the character appears.
+- Do not introduce a new persistent character unless that character is added to the story-level `characters` dictionary.
+- Keep scenes chronological and visually continuous.
+- Do not put subtitles, captions, logos, watermarks or UI text in `scene_prompt`.
+- Use 1–3 `sub_image_prompts` per scene.
+- Use `scene_prompt`, not `image_prompt`, for new JSON. `image_prompt` remains supported for older documents.
+
+## Final prompt sent to Cloudflare
+
+For every independent image API call, Python builds a self-contained prompt similar to this:
+
+```text
+FULL SCENE CONTEXT:
+मीरा एक छोटे शहर के साधारण घर में रहती थी। उसे चित्र बनाना बहुत पसंद था, लेकिन वह अपने बनाए चित्र किसी को दिखाने से डरती थी।
+
+SUB-IMAGE LABEL:
+मीरा चित्र बनाती हुई
+
+SCENE:
+Meera is sitting on a wooden chair inside a simple Indian home, quietly drawing in a sketchbook near a window, looking thoughtful and slightly emotional.
+
+STYLE:
+Cinematic, cartoon-realistic avatar, detailed, natural pose, realistic lighting, soft shadows
+
+MAIN CHARACTER ID: meera123@32 — always use the same Meera character.
+CHARACTER: 29-year-old Indian girl, medium-brown skin, long black hair tied in a simple braid, dark brown eyes, slim build, wearing a pale-yellow cotton kurta and navy-blue salwar, small silver earrings.
+
+KEEP CHARACTER CONSISTENT:
+Preserve Meera's face, hairstyle, age, skin tone, body proportions, clothing, accessories and identity across every scene. Only change pose, expression and action according to the current scene.
+
+FINAL RULES:
+Show only the current story moment. Maintain location and visual continuity. No text, subtitles, captions, logo or watermark.
+```
+
+The actual log contains the exact final string, not this shortened example.
 
 ## Run
 
-Install dependencies:
-
 ```bash
 pip install -r requirements.txt
+python main.py
 ```
 
-Linux/GitHub Actions Hindi font:
+MongoDB configuration:
 
-```bash
-sudo apt-get update
-sudo apt-get install -y fonts-noto-core
-```
-
-Set MongoDB:
-
-```bash
-export MONGODB_URI="your-mongodb-connection-string"
+```text
+MONGODB_URI=your-mongodb-connection-string
+MONGODB_DATABASE=storydb
+MONGODB_COLLECTION=story_scenes
 ```
 
 Optional:
 
-```bash
-export STORY_ID="story_003"
+```text
+STORY_ID=your_story_id
 ```
 
-Run:
+## Output
 
-```bash
-python main.py
+Generated images:
+
+```text
+images/
 ```
 
-## MongoDB
+Audio:
 
-The generator expects the story document in:
-
-- database: `storydb`
-- collection: `story_scenes`
-
-The title page gets its dynamic title from:
-
-```json
-{
-  "story_id": "story_003",
-  "title": "लड़की और लोमड़ी",
-  "status": "PENDING"
-}
+```text
+audio/
 ```
 
-The scene format is:
-
-```json
-{
-  "scene_number": 1,
-  "text": "Narration...",
-  "sub_image_prompts": [
-    {
-      "text": "Sentence...",
-      "image_prompt": "English image prompt..."
-    }
-  ]
-}
-```
-
-## Video order
-
-1. MongoDB title page
-2. All story scenes
-3. Final Smart Learning Lab CTA page
-
-The generated video is:
+Final video:
 
 ```text
 final_video.mp4
 ```
 
-The title is not hard-coded in the title card. It is passed from MongoDB:
-`story["title"] -> build_video(..., title) -> create_title_card(title)`.
+Usage logs:
 
-## Image generation
-
-The video pipeline uses the following image-provider order:
-
-1. **Cloudflare Workers AI** — primary provider
-2. **Pollinations** — automatic AI fallback if Cloudflare fails
-3. **Local generated fallback** — used only if both AI providers fail
-
-For Cloudflare REST API image generation, configure these environment variables:
-
-```bash
-export CLOUDFLARE_ACCOUNT_ID="your-cloudflare-account-id"
-export CLOUDFLARE_API_TOKEN="your-cloudflare-workers-ai-token"
-export CLOUDFLARE_IMAGE_MODEL="@cf/black-forest-labs/flux-1-schnell"
-export CLOUDFLARE_IMAGE_STEPS="1"
+```text
+logs/cloudflare_daily_usage_YYYY-MM-DD.json
+logs/neuron_usage_<story_id>.json
+logs/image_api_prompts_<story_id>.jsonl
 ```
 
-For GitHub Actions, add these repository secrets:
+## Important neuron-usage note
 
-- `CLOUDFLARE_ACCOUNT_ID`
-- `CLOUDFLARE_API_TOKEN`
-
-The workflow already sets the model to `@cf/black-forest-labs/flux-1-schnell` and uses 3 steps to keep image-generation usage lower.
-
-Cloudflare's FLUX.1 Schnell REST response contains the generated image as Base64 in `result.image`; the application decodes and validates that response before saving it.
-
-
-## Image prompt continuity update
-
-Each generated sub-image request is now self-contained. The generator injects the full story scene text, the exact sub-image moment, the visual direction, and the complete `characters` dictionary into every image request. The character consistency block is deliberately appended at the end of every prompt so Cloudflare/Pollinations receives the same character identity details on every independent request.
-
-This also prevents the empty `MAIN CHARACTER — .` placeholder in older JSON prompts from being used as the character definition.
-
-## Cloudflare neuron usage monitoring
-
-The image generator now prints usage for every generated image and a running story total. It also writes a JSON report to `logs/neuron_usage_<story_id>.json`.
-
-The current FLUX.1 Schnell configuration defaults to `CLOUDFLARE_IMAGE_STEPS=1`, with the usage estimate configured as:
-- `CLOUDFLARE_BASE_NEURONS_PER_TILE=4.8`
-- `CLOUDFLARE_NEURONS_PER_STEP=9.6`
-
-The default image setting is now `CLOUDFLARE_IMAGE_STEPS=1` to reduce neuron usage. For the observed 1024-class FLUX.1 Schnell output, Cloudflare reported 134.40 neurons at 3 steps; that corresponds to 4 tiles × (4.8 + 3 × 9.6). At 1 step the same tile count is approximately 57.60 neurons/image. The Cloudflare dashboard remains authoritative.
-
-If Cloudflare returns an explicit neuron field in the API response, the tracker records that value as `reported`; otherwise it labels the value `estimated`. The Cloudflare dashboard remains the authoritative source for billed neuron usage.
+Cloudflare documents the 10,000-neuron daily allocation and the 00:00 UTC reset. The project cannot claim that its local ledger is the exact account-level remaining balance because the REST inference response does not provide a documented daily remaining-neuron counter. When Cloudflare returns an explicit neuron count, that count is recorded; otherwise the configured estimate is recorded. For exact account billing/remaining usage, check the Cloudflare Workers AI dashboard.

@@ -32,9 +32,8 @@ CLOUDFLARE_MODEL = os.getenv(
     "@cf/black-forest-labs/flux-1-schnell",
 ).strip()
 
-# 1 step is intentionally selected for the user's low-cost story-image workflow.
-# FLUX.1 Schnell is still billed by 512x512 tiles, so at the current
-# 1024-class output, 1 step is substantially cheaper than 3 or 4 steps.
+# 3 steps keeps usage lower while retaining reasonable scene quality.
+# Increase to 4 if you prefer the model's default quality/steps.
 CLOUDFLARE_STEPS = int(
     os.getenv("CLOUDFLARE_IMAGE_STEPS", "1")
 )
@@ -65,6 +64,18 @@ CLOUDFLARE_BASE_NEURONS_PER_TILE = float(
 CLOUDFLARE_NEURONS_PER_STEP = float(
     os.getenv("CLOUDFLARE_NEURONS_PER_STEP", "9.6")
 )
+
+# Cloudflare currently provides a 10,000-neuron daily free allocation.
+# The REST inference response does not expose a documented daily-remaining
+# counter, so this project keeps a persistent UTC-day ledger. If an API
+# response ever contains an explicit neuron count, that value is used.
+CLOUDFLARE_DAILY_NEURON_LIMIT = float(
+    os.getenv("CLOUDFLARE_DAILY_NEURON_LIMIT", "10000")
+)
+CLOUDFLARE_POLLINATIONS_THRESHOLD = float(
+    os.getenv("CLOUDFLARE_POLLINATIONS_THRESHOLD", "200")
+)
+DAILY_USAGE_DIR = os.getenv("CLOUDFLARE_DAILY_USAGE_DIR", "logs")
 
 _USAGE = {
     "story_id": None,
@@ -142,6 +153,7 @@ def _record_image_usage(
     cloudflare_neurons=0.0,
     neuron_source="not_applicable",
     cloudflare_attempts=0,
+    final_prompt=None,
 ):
     """Record provider and neuron usage for one requested image."""
     _USAGE["images"].append({
@@ -151,6 +163,7 @@ def _record_image_usage(
         "cloudflare_neurons": round(float(cloudflare_neurons), 2),
         "neuron_source": neuron_source,
         "cloudflare_attempts": cloudflare_attempts,
+        "final_prompt_sent_to_api": final_prompt,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -164,6 +177,98 @@ def _record_image_usage(
         _USAGE["pollinations_successes"] += 1
     elif provider == "local":
         _USAGE["local_fallbacks"] += 1
+
+
+def _utc_day_key():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _daily_usage_path(day=None):
+    day = day or _utc_day_key()
+    os.makedirs(DAILY_USAGE_DIR, exist_ok=True)
+    return os.path.join(
+        DAILY_USAGE_DIR,
+        f"cloudflare_daily_usage_{day}.json",
+    )
+
+
+def _load_daily_usage(day=None):
+    day = day or _utc_day_key()
+    path = _daily_usage_path(day)
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("date_utc") == day:
+                return data
+        except Exception:
+            pass
+    return {
+        "date_utc": day,
+        "daily_limit_neurons": CLOUDFLARE_DAILY_NEURON_LIMIT,
+        "cloudflare_neurons_used": 0.0,
+        "cloudflare_images": 0,
+        "estimated_neurons": 0.0,
+        "reported_neurons": 0.0,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "note": "Local ledger. Cloudflare dashboard is authoritative.",
+    }
+
+
+def _save_daily_usage(data):
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    path = _daily_usage_path(data.get("date_utc"))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def get_daily_cloudflare_status():
+    """Return the persisted UTC-day neuron ledger and remaining allowance."""
+    data = _load_daily_usage()
+    used = max(0.0, float(data.get("cloudflare_neurons_used", 0.0)))
+    limit = max(0.0, float(data.get("daily_limit_neurons", CLOUDFLARE_DAILY_NEURON_LIMIT)))
+    remaining = max(0.0, limit - used)
+    return {
+        **data,
+        "cloudflare_neurons_remaining": round(remaining, 2),
+        "pollinations_threshold": CLOUDFLARE_POLLINATIONS_THRESHOLD,
+        "cloudflare_allowed_by_threshold": remaining > CLOUDFLARE_POLLINATIONS_THRESHOLD,
+        "usage_file": _daily_usage_path(data.get("date_utc")),
+    }
+
+
+def _record_daily_cloudflare_neurons(neurons, source):
+    data = _load_daily_usage()
+    value = max(0.0, float(neurons))
+    data["cloudflare_neurons_used"] = round(
+        float(data.get("cloudflare_neurons_used", 0.0)) + value,
+        4,
+    )
+    data["cloudflare_images"] = int(data.get("cloudflare_images", 0)) + 1
+    if source == "reported":
+        data["reported_neurons"] = round(
+            float(data.get("reported_neurons", 0.0)) + value,
+            4,
+        )
+    else:
+        data["estimated_neurons"] = round(
+            float(data.get("estimated_neurons", 0.0)) + value,
+            4,
+        )
+    return _save_daily_usage(data)
+
+
+def _print_daily_cloudflare_status(prefix="📅 Cloudflare daily status"):
+    status = get_daily_cloudflare_status()
+    print(
+        f"{prefix} | UTC {status['date_utc']} | "
+        f"used={status['cloudflare_neurons_used']:.2f} | "
+        f"remaining={status['cloudflare_neurons_remaining']:.2f} | "
+        f"threshold={CLOUDFLARE_POLLINATIONS_THRESHOLD:.2f}",
+        flush=True,
+    )
+    return status
 
 
 def get_usage_summary():
@@ -245,6 +350,23 @@ def _save_cloudflare_image(response, path):
     return True
 
 
+def _log_final_api_prompt(prompt, provider="cloudflare"):
+    """Append the exact final prompt used for an image API request to a JSONL log."""
+    os.makedirs("logs", exist_ok=True)
+    story_id = _USAGE.get("story_id") or "unknown"
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(story_id))
+    path = os.path.join("logs", f"image_api_prompts_{safe_id}.jsonl")
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "provider": provider,
+        "image_number": len(_USAGE.get("images", [])) + 1,
+        "final_prompt_sent_to_api": prompt,
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
 def _generate_cloudflare(prompt, path):
     """Generate an image using Cloudflare Workers AI."""
     if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
@@ -265,6 +387,12 @@ def _generate_cloudflare(prompt, path):
         "prompt": prompt,
         "steps": CLOUDFLARE_STEPS,
     }
+
+    prompt_log_path = _log_final_api_prompt(prompt, provider="cloudflare")
+    print(
+        f"📝 Final Cloudflare API prompt logged: {prompt_log_path}",
+        flush=True,
+    )
 
     for attempt in range(1, CLOUDFLARE_RETRIES + 1):
         _USAGE["cloudflare_attempts"] += 1
@@ -304,7 +432,9 @@ def _generate_cloudflare(prompt, path):
                         neurons,
                         source,
                         attempt,
+                        final_prompt=prompt,
                     )
+                    _record_daily_cloudflare_neurons(neurons, source)
 
                     print(
                         f"✅ Cloudflare image saved: {path}",
@@ -319,6 +449,7 @@ def _generate_cloudflare(prompt, path):
                         f"{get_usage_summary()['total_cloudflare_neurons']:.2f}",
                         flush=True,
                     )
+                    _print_daily_cloudflare_status()
 
                     return True
 
@@ -392,6 +523,7 @@ def _generate_pollinations(prompt, path):
                     0.0,
                     "not_applicable",
                     0,
+                    final_prompt=prompt,
                 )
 
                 print(
@@ -451,18 +583,39 @@ def generate_image(
     """
 
     # --------------------------------------------------------
-    # 1. CLOUDFLARE PRIMARY
+    # 1. DAILY NEURON THRESHOLD ROUTING
     # --------------------------------------------------------
 
-    if _generate_cloudflare(prompt, path):
-        return path
+    daily_status = _print_daily_cloudflare_status(
+        "📅 Before image provider selection"
+    )
+
+    if daily_status["cloudflare_neurons_remaining"] > CLOUDFLARE_POLLINATIONS_THRESHOLD:
+        print(
+            f"☁️ Remaining neurons {daily_status['cloudflare_neurons_remaining']:.2f} "
+            f"> {CLOUDFLARE_POLLINATIONS_THRESHOLD:.2f}; trying Cloudflare.",
+            flush=True,
+        )
+        if _generate_cloudflare(prompt, path):
+            return path
+        print(
+            "⚠️ Cloudflare failed; switching to Pollinations fallback...",
+            flush=True,
+        )
+    else:
+        print(
+            f"🔄 Remaining neurons {daily_status['cloudflare_neurons_remaining']:.2f} "
+            f"<= {CLOUDFLARE_POLLINATIONS_THRESHOLD:.2f}; "
+            "skipping Cloudflare and using Pollinations.",
+            flush=True,
+        )
 
     # --------------------------------------------------------
     # 2. POLLINATIONS AI FALLBACK
     # --------------------------------------------------------
 
     print(
-        "🔄 Switching to Pollinations fallback...",
+        "🔄 Pollinations image generation...",
         flush=True,
     )
 
