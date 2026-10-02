@@ -61,9 +61,8 @@ def _normalize_sub_image_prompts(scene):
     Accept the current schema plus common simpler variants.
 
     Supported input:
-      sub_image_prompts: [{text, scene_prompt}, ...]
-      sub_image_prompts: [{text, image_prompt}, ...]  # backward compatible
-      images: [{text, scene_prompt/image_prompt}, ...]
+      sub_image_prompts: [{text, image_prompt}, ...]
+      images: [{text, image_prompt}, ...]
       image_prompts: ["...", "..."]
       image_prompt: "..."
     """
@@ -89,8 +88,7 @@ def _normalize_sub_image_prompts(scene):
             sub_text = ""
         elif isinstance(item, dict):
             prompt = _clean_string(
-                item.get("scene_prompt")
-                or item.get("image_prompt")
+                item.get("image_prompt")
                 or item.get("prompt")
                 or item.get("imagePrompt")
             )
@@ -117,15 +115,6 @@ def _normalize_scenes(story):
 
     if not isinstance(raw_scenes, list):
         raise ValueError("Story must contain a 'scenes' array")
-
-    # Keep the story-level character bible with every normalized scene.
-    # Image generation uses this on EVERY sub-image so each request is
-    # self-contained and does not depend on previous generated images.
-    characters = story.get("characters")
-    if not isinstance(characters, dict):
-        characters = {}
-
-    style = _clean_string(story.get("style"))
 
     valid_scenes = []
 
@@ -156,8 +145,6 @@ def _normalize_scenes(story):
             "scene_number": scene.get("scene_number", index),
             "text": text,
             "sub_image_prompts": prompts,
-            "characters": characters,
-            "style": style,
         })
 
     if not valid_scenes:

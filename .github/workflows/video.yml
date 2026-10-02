@@ -25,24 +25,17 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
       # --------------------------------------------------
-      # Cloudflare Workers AI image generation
-      # Cloudflare is the primary image provider.
-      # Pollinations is used automatically as fallback.
-      # --------------------------------------------------
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_IMAGE_MODEL: "@cf/black-forest-labs/flux-1-schnell"
-      CLOUDFLARE_IMAGE_STEPS: "3"
-      CLOUDFLARE_IMAGE_RETRIES: "2"
-      CLOUDFLARE_IMAGE_TIMEOUT: "120"
-      POLLINATIONS_IMAGE_RETRIES: "3"
-      POLLINATIONS_IMAGE_TIMEOUT: "30"
-
-      # --------------------------------------------------
       # Facebook Page
       # --------------------------------------------------
       FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
       FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+
+      # --------------------------------------------------
+      # Instagram Professional Account
+      # --------------------------------------------------
+      INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+      INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+      META_GRAPH_VERSION: ${{ secrets.META_GRAPH_VERSION || 'v23.0' }}
 
       # --------------------------------------------------
       # Final Like / Subscribe page
@@ -410,7 +403,30 @@ jobs:
           fi
 
       # ==================================================
-      # 18. Validate CTA
+      # 18. Validate Instagram credentials
+      # ==================================================
+      - name: Validate Instagram credentials
+        run: |
+          echo "=========================================="
+          echo "Instagram configuration"
+          echo "=========================================="
+
+          if [ -z "$INSTAGRAM_BUSINESS_ACCOUNT_ID" ]; then
+            echo "❌ INSTAGRAM_BUSINESS_ACCOUNT_ID is EMPTY"
+            exit 1
+          else
+            echo "✅ INSTAGRAM_BUSINESS_ACCOUNT_ID is configured"
+          fi
+
+          if [ -z "$INSTAGRAM_ACCESS_TOKEN" ]; then
+            echo "❌ INSTAGRAM_ACCESS_TOKEN is EMPTY"
+            exit 1
+          else
+            echo "✅ INSTAGRAM_ACCESS_TOKEN is configured"
+          fi
+
+      # ==================================================
+      # 19. Validate CTA
       # ==================================================
       - name: Validate CTA URL
         run: |
@@ -423,7 +439,7 @@ jobs:
           echo "$CTA_URL"
 
       # ==================================================
-      # 19. Validate title configuration
+      # 20. Validate title configuration
       # ==================================================
       - name: Validate title page configuration
         run: |
@@ -442,7 +458,7 @@ jobs:
           echo "✅ Title page configuration valid"
 
       # ==================================================
-      # 20. Validate Python source
+      # 21. Validate Python source
       # ==================================================
       - name: Validate Python source
         run: |
@@ -463,11 +479,13 @@ jobs:
           fi
 
           python -m py_compile facebook_upload.py
+          python -m py_compile instagram_service.py
+          python -m py_compile social_publish.py
 
           echo "✅ Python syntax validation successful"
 
       # ==================================================
-      # 21. Run Video Generator
+      # 22. Run Video Generator
       # ==================================================
       - name: Run Video Generator
         run: |
@@ -480,7 +498,7 @@ jobs:
           python main.py
 
       # ==================================================
-      # 22. Verify generated video
+      # 23. Verify generated video
       # ==================================================
       - name: Verify generated video
         run: |
@@ -542,16 +560,21 @@ jobs:
             final_video.mp4
 
       # ==================================================
-      # 23. Publish video to Facebook Page
+      # 24. Publish video to Facebook + Instagram
       # ==================================================
-      - name: Publish video to Facebook Page
+      - name: Publish video to Facebook and Instagram
         run: |
           echo "=========================================="
-          echo "Publishing video to Facebook Page"
+          echo "Publishing video to Facebook + Instagram"
           echo "=========================================="
 
-          if [ ! -f "facebook_upload.py" ]; then
-            echo "❌ facebook_upload.py not found"
+          if [ ! -f "social_publish.py" ]; then
+            echo "❌ social_publish.py not found"
+            exit 1
+          fi
+
+          if [ ! -f "instagram_service.py" ]; then
+            echo "❌ instagram_service.py not found"
             exit 1
           fi
 
@@ -560,14 +583,12 @@ jobs:
             exit 1
           fi
 
-          echo "Running facebook_upload.py..."
+          python social_publish.py
 
-          python facebook_upload.py
-
-          echo "✅ Facebook publishing step completed"
+          echo "✅ Social publishing step completed"
 
       # ==================================================
-      # 24. Upload final video artifact
+      # 25. Upload final video artifact
       # ==================================================
       - name: Upload video
         uses: actions/upload-artifact@v4
@@ -578,7 +599,7 @@ jobs:
           retention-days: 7
 
       # ==================================================
-      # 25. Upload generated assets
+      # 26. Upload generated assets
       # ==================================================
       - name: Upload generated assets
         uses: actions/upload-artifact@v4
