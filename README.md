@@ -90,7 +90,7 @@ The scene format is:
   "sub_image_prompts": [
     {
       "text": "Sentence...",
-      "image_prompt": "English image prompt..."
+      "scene_prompt": "English image prompt..."
     }
   ]
 }

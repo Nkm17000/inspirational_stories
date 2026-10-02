@@ -61,8 +61,8 @@ def _normalize_sub_image_prompts(scene):
     Accept the current schema plus common simpler variants.
 
     Supported input:
-      sub_image_prompts: [{text, image_prompt}, ...]
-      images: [{text, image_prompt}, ...]
+      sub_image_prompts: [{text, scene_prompt}, ...]
+      images: [{text, scene_prompt}, ...]
       image_prompts: ["...", "..."]
       image_prompt: "..."
     """
@@ -87,8 +87,12 @@ def _normalize_sub_image_prompts(scene):
             prompt = _clean_string(item)
             sub_text = ""
         elif isinstance(item, dict):
+            # New schema uses scene_prompt. Keep image_prompt/prompt
+            # compatibility so older stories continue to work.
             prompt = _clean_string(
-                item.get("image_prompt")
+                item.get("scene_prompt")
+                or item.get("scenePrompt")
+                or item.get("image_prompt")
                 or item.get("prompt")
                 or item.get("imagePrompt")
             )
