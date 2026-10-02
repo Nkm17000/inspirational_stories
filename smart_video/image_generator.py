@@ -32,10 +32,11 @@ CLOUDFLARE_MODEL = os.getenv(
     "@cf/black-forest-labs/flux-1-schnell",
 ).strip()
 
-# 3 steps keeps usage lower while retaining reasonable scene quality.
-# Increase to 4 if you prefer the model's default quality/steps.
+# 1 step is intentionally selected for the user's low-cost story-image workflow.
+# FLUX.1 Schnell is still billed by 512x512 tiles, so at the current
+# 1024-class output, 1 step is substantially cheaper than 3 or 4 steps.
 CLOUDFLARE_STEPS = int(
-    os.getenv("CLOUDFLARE_IMAGE_STEPS", "3")
+    os.getenv("CLOUDFLARE_IMAGE_STEPS", "1")
 )
 
 CLOUDFLARE_RETRIES = int(

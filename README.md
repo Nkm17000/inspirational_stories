@@ -125,7 +125,7 @@ For Cloudflare REST API image generation, configure these environment variables:
 export CLOUDFLARE_ACCOUNT_ID="your-cloudflare-account-id"
 export CLOUDFLARE_API_TOKEN="your-cloudflare-workers-ai-token"
 export CLOUDFLARE_IMAGE_MODEL="@cf/black-forest-labs/flux-1-schnell"
-export CLOUDFLARE_IMAGE_STEPS="3"
+export CLOUDFLARE_IMAGE_STEPS="1"
 ```
 
 For GitHub Actions, add these repository secrets:
@@ -148,8 +148,10 @@ This also prevents the empty `MAIN CHARACTER — .` placeholder in older JSON pr
 
 The image generator now prints usage for every generated image and a running story total. It also writes a JSON report to `logs/neuron_usage_<story_id>.json`.
 
-The current FLUX.1 Schnell configuration defaults to `CLOUDFLARE_IMAGE_STEPS=3`, with the usage estimate configured as:
+The current FLUX.1 Schnell configuration defaults to `CLOUDFLARE_IMAGE_STEPS=1`, with the usage estimate configured as:
 - `CLOUDFLARE_BASE_NEURONS_PER_TILE=4.8`
 - `CLOUDFLARE_NEURONS_PER_STEP=9.6`
+
+The default image setting is now `CLOUDFLARE_IMAGE_STEPS=1` to reduce neuron usage. For the observed 1024-class FLUX.1 Schnell output, Cloudflare reported 134.40 neurons at 3 steps; that corresponds to 4 tiles × (4.8 + 3 × 9.6). At 1 step the same tile count is approximately 57.60 neurons/image. The Cloudflare dashboard remains authoritative.
 
 If Cloudflare returns an explicit neuron field in the API response, the tracker records that value as `reported`; otherwise it labels the value `estimated`. The Cloudflare dashboard remains the authoritative source for billed neuron usage.
