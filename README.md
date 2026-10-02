@@ -137,3 +137,19 @@ The workflow already sets the model to `@cf/black-forest-labs/flux-1-schnell` an
 
 Cloudflare's FLUX.1 Schnell REST response contains the generated image as Base64 in `result.image`; the application decodes and validates that response before saving it.
 
+
+## Image prompt continuity update
+
+Each generated sub-image request is now self-contained. The generator injects the full story scene text, the exact sub-image moment, the visual direction, and the complete `characters` dictionary into every image request. The character consistency block is deliberately appended at the end of every prompt so Cloudflare/Pollinations receives the same character identity details on every independent request.
+
+This also prevents the empty `MAIN CHARACTER — .` placeholder in older JSON prompts from being used as the character definition.
+
+## Cloudflare neuron usage monitoring
+
+The image generator now prints usage for every generated image and a running story total. It also writes a JSON report to `logs/neuron_usage_<story_id>.json`.
+
+The current FLUX.1 Schnell configuration defaults to `CLOUDFLARE_IMAGE_STEPS=3`, with the usage estimate configured as:
+- `CLOUDFLARE_BASE_NEURONS_PER_TILE=4.8`
+- `CLOUDFLARE_NEURONS_PER_STEP=9.6`
+
+If Cloudflare returns an explicit neuron field in the API response, the tracker records that value as `reported`; otherwise it labels the value `estimated`. The Cloudflare dashboard remains the authoritative source for billed neuron usage.

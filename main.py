@@ -9,6 +9,7 @@ from smart_video.db import (
     update_story_status,
 )
 from smart_video.video_builder import build_video
+from smart_video.image_generator import start_story_usage, get_usage_summary, save_usage_report
 
 
 def export_story_to_github_actions(story_id, title):
@@ -148,18 +149,70 @@ def main():
         )
 
         # ==================================================
-        # Generate video
+        # Generate video + reset per-story neuron accounting
         # ==================================================
+
+        start_story_usage(
+            story_id=story_id,
+            story_title=title,
+        )
 
         print(
             "\n🎬 Starting video generation...",
             flush=True,
         )
 
-        build_video(
-            scenes,
-            title,
-        )
+        try:
+            build_video(
+                scenes,
+                title,
+            )
+        finally:
+            # Save usage even when video generation fails part-way through.
+            report_path, usage = save_usage_report()
+
+            print(
+                "\n==========================================",
+                flush=True,
+            )
+            print(
+                "📊 IMAGE / CLOUDFLARE NEURON USAGE",
+                flush=True,
+            )
+            print(
+                f"🖼️ Images requested: {len(usage['images'])}",
+                flush=True,
+            )
+            print(
+                f"☁️ Cloudflare successes: {usage['cloudflare_successes']}",
+                flush=True,
+            )
+            print(
+                f"🔄 Pollinations fallbacks: {usage['pollinations_successes']}",
+                flush=True,
+            )
+            print(
+                f"🖼️ Local fallbacks: {usage['local_fallbacks']}",
+                flush=True,
+            )
+            print(
+                f"🔢 Cloudflare attempts: {usage['cloudflare_attempts']}",
+                flush=True,
+            )
+            print(
+                f"🧮 Cloudflare neurons for this story: "
+                f"{usage['total_cloudflare_neurons']:.2f}",
+                flush=True,
+            )
+            print(
+                "ℹ️ Neuron total is estimated unless Cloudflare returns an "
+                "explicit usage field; verify billed usage in Cloudflare.",
+                flush=True,
+            )
+            print(
+                f"📄 Usage report: {report_path}",
+                flush=True,
+            )
 
         # ==================================================
         # Verify generated video

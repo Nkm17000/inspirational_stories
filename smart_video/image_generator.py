@@ -1,8 +1,10 @@
 """AI image generation with Cloudflare Workers AI as primary and Pollinations as fallback."""
 
 import base64
+import json
 import os
 import time
+from datetime import datetime, timezone
 import urllib.parse
 from io import BytesIO
 
@@ -51,6 +53,147 @@ POLLINATIONS_RETRIES = int(
 POLLINATIONS_TIMEOUT = int(
     os.getenv("POLLINATIONS_IMAGE_TIMEOUT", "30")
 )
+
+# Cloudflare FLUX.1 Schnell usage estimate. Cloudflare responses for this
+# model normally contain the Base64 image but do not expose neuron usage in
+# the REST response, so the tracker records an ESTIMATED value unless an
+# explicit neuron field is returned by the API.
+CLOUDFLARE_BASE_NEURONS_PER_TILE = float(
+    os.getenv("CLOUDFLARE_BASE_NEURONS_PER_TILE", "4.8")
+)
+CLOUDFLARE_NEURONS_PER_STEP = float(
+    os.getenv("CLOUDFLARE_NEURONS_PER_STEP", "9.6")
+)
+
+_USAGE = {
+    "story_id": None,
+    "story_title": None,
+    "started_at": None,
+    "images": [],
+    "cloudflare_attempts": 0,
+    "cloudflare_successes": 0,
+    "pollinations_successes": 0,
+    "local_fallbacks": 0,
+    "estimated_cloudflare_neurons": 0.0,
+    "reported_cloudflare_neurons": 0.0,
+}
+
+
+def start_story_usage(story_id=None, story_title=None):
+    """Reset image/neuron accounting for one complete story run."""
+    global _USAGE
+    _USAGE = {
+        "story_id": story_id,
+        "story_title": story_title,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "images": [],
+        "cloudflare_attempts": 0,
+        "cloudflare_successes": 0,
+        "pollinations_successes": 0,
+        "local_fallbacks": 0,
+        "estimated_cloudflare_neurons": 0.0,
+        "reported_cloudflare_neurons": 0.0,
+    }
+
+
+def _extract_reported_neurons(data):
+    """Find an explicit neuron count if Cloudflare ever returns one."""
+    if not isinstance(data, dict):
+        return None
+
+    preferred_keys = {
+        "neurons", "neuron", "neurons_used", "neuron_count",
+        "total_neurons", "ai_neurons", "usage_neurons",
+    }
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if str(key).lower() in preferred_keys:
+                    try:
+                        value = float(value)
+                        if value >= 0:
+                            return value
+                    except (TypeError, ValueError):
+                        pass
+                found = walk(value)
+                if found is not None:
+                    return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = walk(item)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(data)
+
+
+def _estimated_cloudflare_neurons():
+    return (
+        CLOUDFLARE_BASE_NEURONS_PER_TILE
+        + CLOUDFLARE_NEURONS_PER_STEP * CLOUDFLARE_STEPS
+    )
+
+
+def _record_image_usage(
+    path, provider,
+    cloudflare_neurons=0.0,
+    neuron_source="not_applicable",
+    cloudflare_attempts=0,
+):
+    """Record provider and neuron usage for one requested image."""
+    _USAGE["images"].append({
+        "image_number": len(_USAGE["images"]) + 1,
+        "path": path,
+        "provider": provider,
+        "cloudflare_neurons": round(float(cloudflare_neurons), 2),
+        "neuron_source": neuron_source,
+        "cloudflare_attempts": cloudflare_attempts,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    if provider == "cloudflare":
+        _USAGE["cloudflare_successes"] += 1
+        if neuron_source == "reported":
+            _USAGE["reported_cloudflare_neurons"] += float(cloudflare_neurons)
+        else:
+            _USAGE["estimated_cloudflare_neurons"] += float(cloudflare_neurons)
+    elif provider == "pollinations":
+        _USAGE["pollinations_successes"] += 1
+    elif provider == "local":
+        _USAGE["local_fallbacks"] += 1
+
+
+def get_usage_summary():
+    """Return the current story image/neuron accounting."""
+    estimated = round(_USAGE["estimated_cloudflare_neurons"], 2)
+    reported = round(_USAGE["reported_cloudflare_neurons"], 2)
+    total_known = round(estimated + reported, 2)
+    return {
+        **_USAGE,
+        "estimated_cloudflare_neurons": estimated,
+        "reported_cloudflare_neurons": reported,
+        "total_cloudflare_neurons": total_known,
+        "note": (
+            "Cloudflare REST image responses do not normally expose neuron usage; "
+            "estimated values use the configured base tile + per-step values. "
+            "Check the Cloudflare dashboard for the authoritative billed total."
+        ),
+    }
+
+
+def save_usage_report(output_dir="logs"):
+    """Write a machine-readable per-image and story-level usage report."""
+    os.makedirs(output_dir, exist_ok=True)
+    story_id = _USAGE.get("story_id") or "unknown"
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(story_id))
+    path = os.path.join(output_dir, f"neuron_usage_{safe_id}.json")
+    report = get_usage_summary()
+    report["finished_at"] = datetime.now(timezone.utc).isoformat()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    return path, report
 
 
 # ============================================================
@@ -123,6 +266,7 @@ def _generate_cloudflare(prompt, path):
     }
 
     for attempt in range(1, CLOUDFLARE_RETRIES + 1):
+        _USAGE["cloudflare_attempts"] += 1
         try:
             print(
                 f"☁️ Cloudflare image attempt "
@@ -145,9 +289,33 @@ def _generate_cloudflare(prompt, path):
             if response.status_code == 200:
                 try:
                     _save_cloudflare_image(response, path)
+                    response_data = response.json()
+                    reported = _extract_reported_neurons(response_data)
+                    neurons = (
+                        reported
+                        if reported is not None
+                        else _estimated_cloudflare_neurons()
+                    )
+                    source = "reported" if reported is not None else "estimated"
+                    _record_image_usage(
+                        path,
+                        "cloudflare",
+                        neurons,
+                        source,
+                        attempt,
+                    )
 
                     print(
                         f"✅ Cloudflare image saved: {path}",
+                        flush=True,
+                    )
+                    print(
+                        f"   📊 Cloudflare neurons for this image: {neurons:.2f} ({source})",
+                        flush=True,
+                    )
+                    print(
+                        f"   📊 Story Cloudflare neurons so far: "
+                        f"{get_usage_summary()['total_cloudflare_neurons']:.2f}",
                         flush=True,
                     )
 
@@ -217,8 +385,26 @@ def _generate_pollinations(prompt, path):
                 with open(path, "wb") as f:
                     f.write(response.content)
 
+                _record_image_usage(
+                    path,
+                    "pollinations",
+                    0.0,
+                    "not_applicable",
+                    0,
+                )
+
                 print(
                     f"✅ Pollinations fallback image saved: {path}",
+                    flush=True,
+                )
+                print(
+                    "   📊 Cloudflare neurons for this image: 0.00 "
+                    "(Pollinations fallback)",
+                    flush=True,
+                )
+                print(
+                    f"   📊 Story Cloudflare neurons so far: "
+                    f"{get_usage_summary()['total_cloudflare_neurons']:.2f}",
                     flush=True,
                 )
 
@@ -346,8 +532,21 @@ def generate_image(
 
         img.save(path)
 
+        _record_image_usage(
+            path,
+            "local",
+            0.0,
+            "not_applicable",
+            0,
+        )
+
         print(
             f"⚠️ Local fallback saved: {path}",
+            flush=True,
+        )
+        print(
+            "   📊 Cloudflare neurons for this image: 0.00 "
+            "(local fallback)",
             flush=True,
         )
 

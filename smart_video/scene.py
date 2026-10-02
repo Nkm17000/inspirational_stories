@@ -18,6 +18,92 @@ from .subtitles import create_subtitle
 
 
 # ============================================================
+# IMAGE PROMPT CONTINUITY
+# ============================================================
+
+def _build_consistent_image_prompt(
+    scene_text,
+    sub_text,
+    base_prompt,
+    characters,
+    style,
+    scene_number,
+    prompt_index,
+):
+    """
+    Build a completely self-contained prompt for EACH image request.
+
+    The image API is called one image at a time, so every request receives
+    the full character bible and the full scene context. This prevents the
+    model from relying on a previous request/image for identity continuity.
+
+    Character details are intentionally appended LAST, as requested.
+    """
+    base_prompt = (base_prompt or "").strip()
+
+    # Remove the old broken placeholder from the generated JSON prompt.
+    base_prompt = base_prompt.replace("MAIN CHARACTER — .", "").strip()
+
+    parts = [
+        "Create one standalone image for this exact story moment.",
+        f"Scene {scene_number}, sub-image {prompt_index}.",
+        f"FULL SCENE CONTEXT: {scene_text}",
+    ]
+
+    if sub_text:
+        parts.append(
+            f"EXACT SUB-IMAGE MOMENT: {sub_text}"
+        )
+
+    if base_prompt:
+        parts.append(
+            f"VISUAL DIRECTION: {base_prompt}"
+        )
+
+    if style:
+        parts.append(
+            f"STORY VISUAL STYLE: {style}."
+        )
+
+    parts.append(
+        "SYNC REQUIREMENT: The image must represent only the exact moment "
+        "described above while remaining visually consistent with the full "
+        "scene. Keep the same time-of-day, location, emotional progression, "
+        "props and action context when applicable. Do not invent a different "
+        "story event. Do not add characters who are not relevant to this moment."
+    )
+
+    # IMPORTANT: Character bible is always the LAST part of the prompt.
+    character_lines = []
+    if isinstance(characters, dict):
+        for role, details in characters.items():
+            role_name = str(role).strip().upper()
+            if isinstance(details, str) and details.strip():
+                character_lines.append(
+                    f"{role_name} CHARACTER DETAILS: {details.strip()}"
+                )
+
+    if character_lines:
+        parts.append(
+            "FINAL CHARACTER CONSISTENCY BIBLE — ALWAYS APPLY THESE "
+            "CHARACTER DETAILS EXACTLY IN THIS IMAGE. Do not depend on any "
+            "previous or future image. Preserve age, face, skin tone, hair, "
+            "body build, clothing, accessories and identity across every "
+            "sub-image. Only change pose, expression or action when required "
+            "by the exact story moment.\n"
+            + "\n".join(character_lines)
+        )
+    else:
+        parts.append(
+            "FINAL CHARACTER CONSISTENCY BIBLE — No character details were "
+            "provided in the story JSON; do not invent persistent character "
+            "identities beyond what the exact scene moment requires."
+        )
+
+    return " ".join(parts)
+
+
+# ============================================================
 # CINEMATIC IMAGE MOTION
 # ============================================================
 
@@ -246,40 +332,6 @@ def create_scene(
         flush=True
     )
 
-    for prompt_index, item in enumerate(
-        sub_image_prompts,
-        start=1
-    ):
-
-        sub_text = item.get(
-            "text",
-            ""
-        )
-
-        image_prompt = item[
-            "image_prompt"
-        ]
-
-        print(
-            f"   🖼️ Image "
-            f"{prompt_index}/{len(sub_image_prompts)}",
-            flush=True
-        )
-
-        if sub_text:
-
-            print(
-                f"      📝 Sub-text: "
-                f"{sub_text[:100]}...",
-                flush=True
-            )
-
-        print(
-            f"      🎨 Prompt: "
-            f"{image_prompt[:120]}...",
-            flush=True
-        )
-
     # --------------------------------------------------------
     # Generate ONE voice for the complete scene text
     # --------------------------------------------------------
@@ -454,15 +506,39 @@ def create_scene(
         start=1
     ):
 
-        image_prompt = item[
-            "image_prompt"
-        ]
+        sub_text = item.get("text", "")
+        base_image_prompt = item["image_prompt"]
 
-        if not image_prompt:
+        if not base_image_prompt:
             raise ValueError(
                 f"❌ Scene {scene_number}, image "
                 f"{prompt_index} has an empty image_prompt"
             )
+
+        image_prompt = _build_consistent_image_prompt(
+            scene_text=text,
+            sub_text=sub_text,
+            base_prompt=base_image_prompt,
+            characters=scene.get("characters", {}),
+            style=scene.get("style", ""),
+            scene_number=scene_number,
+            prompt_index=prompt_index,
+        )
+
+        print(
+            f"   🖼️ Image {prompt_index}/{image_count}",
+            flush=True,
+        )
+        if sub_text:
+            print(
+                f"      📝 Sub-text: {sub_text[:100]}...",
+                flush=True,
+            )
+        print(
+            f"      🎨 Final prompt includes full scene + character bible: "
+            f"{image_prompt[-500:]}",
+            flush=True,
+        )
 
         img_path = (
             f"images/"
