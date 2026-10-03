@@ -1,384 +1,258 @@
-"""Application entry point for the Smart Video Generator."""
-
+"""Sequential suspense-story video generator with Facebook + Instagram publishing."""
 import os
 import sys
 from datetime import datetime, timezone
 
-from smart_video.db import (
-    get_story_from_mongodb,
-    update_story_status,
-)
-from smart_video.video_builder import build_video
-from smart_video.image_generator import start_story_usage, get_usage_summary, save_usage_report
+from smart_video.db import get_story_from_mongodb, update_part_status, update_story_status
+from smart_video.video_builder import build_part_video
+from smart_video.image_generator import start_story_usage, save_usage_report, get_usage_summary
+from facebook_upload import upload_video
+from instagram_service import publish_video_to_instagram
 
 
 def export_story_to_github_actions(story_id, title):
-    """
-    Make the exact MongoDB story information available to later
-    GitHub Actions steps, especially facebook_upload.py.
-
-    This avoids querying MongoDB a second time just to get the title.
-    """
-
     github_env = os.getenv("GITHUB_ENV")
-
     if not github_env:
-        print(
-            "ℹ️ GITHUB_ENV is not available. "
-            "Story title will remain available in this process only.",
-            flush=True,
-        )
         return
+    delimiter = "STORY_VALUE_DELIMITER_9f3a7c"
+    with open(github_env, "a", encoding="utf-8") as f:
+        f.write(f"STORY_ID<<{delimiter}\n{story_id}\n{delimiter}\n")
+        f.write(f"STORY_TITLE<<{delimiter}\n{title}\n{delimiter}\n")
 
-    try:
-        # GitHub Actions multiline-safe environment format.
-        # UUID-style delimiter makes collisions with the title extremely
-        # unlikely.
-        delimiter = "STORY_VALUE_DELIMITER_9f3a7c"
 
-        with open(
-            github_env,
-            "a",
-            encoding="utf-8",
-        ) as env_file:
+def build_instagram_caption(title, part_no, part_title):
+    return (
+        f"🎬 {title}\n\n"
+        f"भाग {part_no}: {part_title}\n\n"
+        "अंत तक जरूर देखें... कहानी का रहस्य आखिरी पल में खुलता है। 🔥\n\n"
+        "❤️ Like  |  💬 Comment  |  🔔 Follow\n\n"
+        "#HindiStory #SuspenseStory #HindiReels #SuspenseReels "
+        "#MysteryStory #SmartLearningLab"
+    ).strip()
 
-            env_file.write(
-                f"STORY_ID<<{delimiter}\n"
-            )
-            env_file.write(
-                f"{story_id}\n"
-            )
-            env_file.write(
-                f"{delimiter}\n"
-            )
 
-            env_file.write(
-                f"STORY_TITLE<<{delimiter}\n"
-            )
-            env_file.write(
-                f"{title}\n"
-            )
-            env_file.write(
-                f"{delimiter}\n"
-            )
+def _mark_part_failed(story, part_no, error, video_path=None,
+                      facebook_status="FAILED", instagram_status="FAILED", neuron_fields=None):
+    fields = {
+        "error": str(error),
+        "video_path": video_path,
+        "facebook_status": facebook_status,
+        "instagram_status": instagram_status,
+        "failed_at": datetime.now(timezone.utc),
+    }
+    if neuron_fields:
+        fields.update(neuron_fields)
+    update_part_status(
+        story, part_no, "FAILED",
+        fields,
+    )
 
-        print(
-            "✅ Story ID and title exported to GitHub Actions",
-            flush=True,
-        )
 
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not export story information to GITHUB_ENV: {exc}"
-        ) from exc
+def _part_neuron_totals(before, after):
+    before_total = float(before.get("total_cloudflare_neurons", 0.0) or 0.0)
+    after_total = float(after.get("total_cloudflare_neurons", 0.0) or 0.0)
+    before_est = float(before.get("estimated_cloudflare_neurons", 0.0) or 0.0)
+    after_est = float(after.get("estimated_cloudflare_neurons", 0.0) or 0.0)
+    before_rep = float(before.get("reported_cloudflare_neurons", 0.0) or 0.0)
+    after_rep = float(after.get("reported_cloudflare_neurons", 0.0) or 0.0)
+    return {
+        "cloudflare_neurons_used": round(max(0.0, after_total - before_total), 2),
+        "estimated_cloudflare_neurons": round(max(0.0, after_est - before_est), 2),
+        "reported_cloudflare_neurons": round(max(0.0, after_rep - before_rep), 2),
+    }
 
 
 def main():
-
-    print(
-        "🚀 Starting SmartStudyLab video generator...",
-        flush=True,
-    )
-
+    print("🚀 Starting Smart Learning Lab suspense-story generator...", flush=True)
     story = None
+    successful_parts = failed_parts = 0
 
     try:
-
-        # ==================================================
-        # Get next story from MongoDB
-        # ==================================================
-
-        story, scenes = get_story_from_mongodb()
-
+        story, parts = get_story_from_mongodb()
         if not story:
-
-            print(
-                "❌ No PENDING story was found in MongoDB.",
-                flush=True,
-            )
-
-            print(
-                "ℹ️ No video was generated.",
-                flush=True,
-            )
-
+            print("ℹ️ No PENDING suspense story was found.", flush=True)
             return 2
 
-        # ==================================================
-        # Story information
-        # ==================================================
+        story_id = story.get("story_id") or story.get("id") or story.get("ID") or "unknown"
+        title = str(story.get("title") or "Untitled Suspense Story").strip()
 
-        story_id = (
-            story.get("story_id")
-            or story.get("id")
-            or story.get("ID")
-            or "unknown"
-        )
+        print("=" * 60)
+        print(f"🆔 Story ID : {story_id}")
+        print(f"📖 Title   : {title}")
+        print(f"🧩 Parts   : {len(parts)}")
+        print("=" * 60)
 
-        title = str(
-            story.get(
-                "title",
-                "Untitled Story",
-            )
-            or "Untitled Story"
-        ).strip()
+        export_story_to_github_actions(story_id, title)
+        start_story_usage(story_id=story_id, story_title=title)
 
-        print(
-            f"\n📖 TITLE: {title}",
-            flush=True,
-        )
+        for part in parts:
+            if str(part.get("status", "PENDING")).upper() != "PENDING":
+                print(f"⏭️ Skipping Part {part.get('part_no')}: status={part.get('status')}", flush=True)
+                continue
+            part_no = int(part["part_no"])
+            part_title = str(part.get("part_title") or f"भाग {part_no}").strip()
+            scenes = part.get("scenes") or []
 
-        print(
-            f"🆔 STORY ID: {story_id}",
-            flush=True,
-        )
+            print("\n" + "=" * 60)
+            print(f"▶️ START PART {part_no}: {part_title}")
+            print(f"🎬 Scenes: {len(scenes)}")
+            print("=" * 60)
 
-        print(
-            f"🎬 SCENES: {len(scenes)}",
-            flush=True,
-        )
-
-        # ==================================================
-        # Pass the exact MongoDB title to later GitHub steps.
-        # Facebook upload will use this same title.
-        # ==================================================
-
-        export_story_to_github_actions(
-            story_id,
-            title,
-        )
-
-        # ==================================================
-        # Generate video + reset per-story neuron accounting
-        # ==================================================
-
-        start_story_usage(
-            story_id=story_id,
-            story_title=title,
-        )
-
-        print(
-            "\n🎬 Starting video generation...",
-            flush=True,
-        )
-
-        try:
-            build_video(
-                scenes,
-                title,
-            )
-        finally:
-            # Save usage even when video generation fails part-way through.
-            report_path, usage = save_usage_report()
-
-            print(
-                "\n==========================================",
-                flush=True,
-            )
-            print(
-                "📊 IMAGE / CLOUDFLARE NEURON USAGE",
-                flush=True,
-            )
-            print(
-                f"🖼️ Images requested: {len(usage['images'])}",
-                flush=True,
-            )
-            print(
-                f"☁️ Cloudflare successes: {usage['cloudflare_successes']}",
-                flush=True,
-            )
-            print(
-                f"🔄 Pollinations fallbacks: {usage['pollinations_successes']}",
-                flush=True,
-            )
-            print(
-                f"🖼️ Local fallbacks: {usage['local_fallbacks']}",
-                flush=True,
-            )
-            print(
-                f"🔢 Cloudflare attempts: {usage['cloudflare_attempts']}",
-                flush=True,
-            )
-            print(
-                f"🧮 Cloudflare neurons for this story: "
-                f"{usage['total_cloudflare_neurons']:.2f}",
-                flush=True,
-            )
-            print(
-                "ℹ️ Neuron total is estimated unless Cloudflare returns an "
-                "explicit usage field; verify billed usage in Cloudflare.",
-                flush=True,
-            )
-            print(
-                f"📄 Usage report: {report_path}",
-                flush=True,
+            part_usage_before = get_usage_summary()
+            update_part_status(
+                story, part_no, "PROCESSING",
+                {
+                    "error": None,
+                    "started_at": datetime.now(timezone.utc),
+                    "facebook_status": "PROCESSING",
+                    "instagram_status": "PROCESSING",
+                },
             )
 
-        # ==================================================
-        # Verify generated video
-        # ==================================================
+            if not scenes:
+                error = f"Part {part_no} must contain at least 1 scene; found 0"
+                _mark_part_failed(story, part_no, error)
+                failed_parts += 1
+                continue
 
-        output_path = os.path.abspath(
-            "final_video.mp4"
-        )
-
-        print(
-            "\n🔎 Checking generated video:",
-            flush=True,
-        )
-
-        print(
-            f"📁 {output_path}",
-            flush=True,
-        )
-
-        if not os.path.isfile(output_path):
-
-            raise RuntimeError(
-                "Video generation completed without creating "
-                f"final_video.mp4 at {output_path}"
-            )
-
-        video_size = os.path.getsize(
-            output_path
-        )
-
-        if video_size <= 0:
-
-            raise RuntimeError(
-                "final_video.mp4 was created but is empty"
-            )
-
-        print(
-            "\n==========================================",
-            flush=True,
-        )
-
-        print(
-            "✅ FINAL VIDEO CREATED",
-            flush=True,
-        )
-
-        print(
-            f"📁 Path: {output_path}",
-            flush=True,
-        )
-
-        print(
-            f"📦 Size: "
-            f"{video_size / (1024 * 1024):.2f} MB",
-            flush=True,
-        )
-
-        print(
-            "==========================================",
-            flush=True,
-        )
-
-        # ==================================================
-        # Mark story COMPLETED
-        # ==================================================
-
-        print(
-            f"\n🔄 Updating MongoDB status for "
-            f"{story_id}...",
-            flush=True,
-        )
-
-        status_updated = update_story_status(
-            story,
-            "COMPLETED",
-            {
-                "completed_at": datetime.now(
-                    timezone.utc
-                ),
-                "last_error": None,
-            },
-        )
-
-        if not status_updated:
-
-            raise RuntimeError(
-                "Video was successfully created, but "
-                f"MongoDB status could not be verified "
-                f"as COMPLETED for story {story_id}"
-            )
-
-        print(
-            f"✅ Story {story_id} marked COMPLETED "
-            f"and verified in MongoDB",
-            flush=True,
-        )
-
-        print(
-            "\n✅ Video generation completed successfully!",
-            flush=True,
-        )
-
-        return 0
-
-    except Exception as e:
-
-        print(
-            f"\n❌ Video generation failed: {e}",
-            flush=True,
-        )
-
-        # ==================================================
-        # Mark story FAILED
-        # ==================================================
-
-        if story:
-
-            failed_story_id = (
-                story.get("story_id")
-                or story.get("id")
-                or story.get("ID")
-                or "unknown"
-            )
+            video_path = None
+            fb_id = None
+            ig_id = None
+            fb_status = "FAILED"
+            ig_status = "FAILED"
 
             try:
-
-                status_updated = update_story_status(
-                    story,
-                    "FAILED",
-                    {
-                        "last_error": str(e),
-                        "failed_at": datetime.now(
-                            timezone.utc
-                        ),
-                    },
+                video_path = build_part_video(
+                    scenes=scenes, title=title, part_no=part_no, part_title=part_title, story_id=story_id
                 )
 
-                if status_updated:
-
-                    print(
-                        f"🔴 Story {failed_story_id} "
-                        f"marked FAILED in MongoDB",
-                        flush=True,
+                # Publish to Facebook first.
+                try:
+                    print(f"📘 Publishing Part {part_no} to Facebook...", flush=True)
+                    fb_id = upload_video(
+                        video_path=video_path,
+                        story_title=title,
+                        part_no=part_no,
+                        part_title=part_title,
+                        story_id=story_id,
                     )
+                    fb_status = "POSTED" if fb_id else "FAILED"
+                    print(f"📘 Facebook: {fb_status}", flush=True)
+                except Exception as exc:
+                    print(f"❌ Facebook publish failed: {exc}", flush=True)
+                    fb_status = "FAILED"
 
+                # Publish the same finished MP4 as an Instagram Reel.
+                try:
+                    ig_account = os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "").strip()
+                    ig_token = os.getenv("INSTAGRAM_ACCESS_TOKEN", "").strip()
+                    if not ig_account or not ig_token:
+                        print("⚠️ Instagram credentials not configured; skipping.", flush=True)
+                        ig_status = "SKIPPED"
+                    else:
+                        print(f"📸 Publishing Part {part_no} to Instagram Reel...", flush=True)
+                        ig_result = publish_video_to_instagram(
+                            video_path,
+                            build_instagram_caption(title, part_no, part_title),
+                        )
+                        ig_id = (ig_result or {}).get("id") if isinstance(ig_result, dict) else ig_result
+                        ig_status = "POSTED" if ig_id else "SKIPPED"
+                except Exception as exc:
+                    print(f"❌ Instagram publish failed: {exc}", flush=True)
+                    ig_status = "FAILED"
+
+                if fb_status == "POSTED" or ig_status == "POSTED":
+                    part_usage_after = get_usage_summary()
+                    part_neurons = _part_neuron_totals(part_usage_before, part_usage_after)
+                    print(
+                        f"📊 PART {part_no} Cloudflare neurons used: "
+                        f"{part_neurons['cloudflare_neurons_used']:.2f}", flush=True
+                    )
+                    update_part_status(
+                        story, part_no, "SUCCESS",
+                        {
+                            "video_path": video_path,
+                            "facebook_status": fb_status,
+                            "facebook_video_id": fb_id,
+                            "instagram_status": ig_status,
+                            "instagram_media_id": ig_id,
+                            "error": None,
+                            **part_neurons,
+                            "completed_at": datetime.now(timezone.utc),
+                        },
+                    )
+                    for local_part in story.get("parts", []):
+                        if int(local_part.get("part_no", -1)) == part_no:
+                            local_part["status"] = "SUCCESS"
+                            break
+                    successful_parts += 1
+                    print(f"✅ PART {part_no} SUCCESS", flush=True)
                 else:
+                    raise RuntimeError("Video was created but neither Facebook nor Instagram publishing succeeded.")
 
-                    print(
-                        f"❌ Could not mark story "
-                        f"{failed_story_id} as FAILED",
-                        flush=True,
-                    )
-
-            except Exception as db_error:
-
-                print(
-                    f"❌ MongoDB status update failed: "
-                    f"{db_error}",
-                    flush=True,
+            except Exception as exc:
+                failed_parts += 1
+                part_usage_after = get_usage_summary()
+                part_neurons = _part_neuron_totals(part_usage_before, part_usage_after)
+                print(f"❌ PART {part_no} FAILED: {exc}", flush=True)
+                for local_part in story.get("parts", []):
+                    if int(local_part.get("part_no", -1)) == part_no:
+                        local_part["status"] = "FAILED"
+                        break
+                _mark_part_failed(
+                    story, part_no, exc, video_path=video_path,
+                    facebook_status=fb_status, instagram_status=ig_status,
+                    neuron_fields=part_neurons,
                 )
 
+        report_path, usage = save_usage_report()
+        print("\n📊 IMAGE / CLOUDFLARE USAGE", flush=True)
+        print(f"🖼️ Images requested: {len(usage['images'])}", flush=True)
+        print(f"☁️ Cloudflare successes: {usage['cloudflare_successes']}", flush=True)
+        print(f"🔄 Pollinations fallbacks: {usage['pollinations_successes']}", flush=True)
+        print(f"🔢 Cloudflare attempts: {usage['cloudflare_attempts']}", flush=True)
+        print(f"🧮 Cloudflare neurons used/estimated: {usage['total_cloudflare_neurons']:.2f}", flush=True)
+        print(f"📄 Usage report: {report_path}", flush=True)
+
+        # Re-read the story's part statuses. A story remains PROCESSING while any
+        # part is still PENDING; this allows a later workflow run to pick it up.
+        remaining_pending = 0
+        for p in story.get("parts", []):
+            if str(p.get("status", "PENDING")).upper() == "PENDING":
+                remaining_pending += 1
+
+        if remaining_pending > 0:
+            overall = "PROCESSING"
+        elif failed_parts > 0 and successful_parts > 0:
+            overall = "PARTIAL_SUCCESS"
+        elif failed_parts > 0:
+            overall = "FAILED"
+        else:
+            overall = "COMPLETED"
+        ok = update_story_status(
+            story, overall,
+            {
+                **({"completed_at": datetime.now(timezone.utc)} if overall in ("COMPLETED", "PARTIAL_SUCCESS", "FAILED") else {}),
+                "last_error": None if failed_parts == 0 else f"{failed_parts} part(s) failed.",
+                "image_usage": usage,
+                "usage_report_path": report_path,
+            },
+        )
+        if not ok:
+            return 1
+
+        print(f"🏁 SUSPENSE STORY FINISHED: {overall}", flush=True)
+        return 1 if overall == "FAILED" else 0
+
+    except Exception as exc:
+        print(f"❌ Suspense-story orchestration failed: {exc}", flush=True)
+        if story:
+            update_story_status(story, "FAILED", {
+                "last_error": str(exc),
+                "failed_at": datetime.now(timezone.utc),
+            })
         return 1
 
 
 if __name__ == "__main__":
-
-    exit_code = main()
-
-    sys.exit(exit_code)
+    sys.exit(main())
