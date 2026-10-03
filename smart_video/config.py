@@ -8,6 +8,13 @@ VIDEO_SIZE = (720, 1280)
 FPS = int(os.getenv("VIDEO_FPS", "24"))
 MIN_DURATION = float(os.getenv("MIN_SCENE_DURATION", "5"))
 
+# Pause between completed image generations.
+# Default: 5 seconds. Override with IMAGE_GENERATION_SLEEP_SECONDS.
+IMAGE_GENERATION_SLEEP_SECONDS = max(
+    0.0,
+    float(os.getenv("IMAGE_GENERATION_SLEEP_SECONDS", "5"))
+)
+
 # Branding
 LOGO_PATH = os.getenv("LOGO_PATH", "logo.png")
 LOGO_SIZE = int(os.getenv("LOGO_SIZE", "125"))

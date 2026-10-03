@@ -1,6 +1,7 @@
 """Scene construction: TTS + images + subtitles."""
 
 import os
+import time
 from functools import lru_cache
 
 import numpy as np
@@ -14,7 +15,11 @@ from moviepy.editor import (
 )
 from moviepy.audio.AudioClip import AudioArrayClip
 
-from .config import MIN_DURATION, VIDEO_SIZE
+from .config import (
+    MIN_DURATION,
+    VIDEO_SIZE,
+    IMAGE_GENERATION_SLEEP_SECONDS,
+)
 from .voice import clean_tts_text, generate_voice
 from .image_generator import generate_image
 from .branding import create_fullscreen_clip
@@ -647,6 +652,19 @@ def create_scene(
                 f"for scene {scene_number}, "
                 f"image {prompt_index}"
             )
+
+        # ----------------------------------------------------
+        # Pause after every completed image generation.
+        # This gives external image/translation services time to
+        # recover before the next image request begins.
+        # ----------------------------------------------------
+        if IMAGE_GENERATION_SLEEP_SECONDS > 0:
+            print(
+                f"⏳ Waiting {IMAGE_GENERATION_SLEEP_SECONDS:.1f}s "
+                f"before the next image...",
+                flush=True,
+            )
+            time.sleep(IMAGE_GENERATION_SLEEP_SECONDS)
 
         # ----------------------------------------------------
         # REAL OVERLAP TIMING
