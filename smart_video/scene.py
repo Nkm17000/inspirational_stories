@@ -48,10 +48,15 @@ def _build_consistent_image_prompt(
     style = str(style or "").strip()
 
     parts = [
+         (
+            "COMIC STYLE LOCK: 2D cartoon/comic characters only, "
+            "never photorealistic or real-looking humans. "
+            "Consistent illustrated style."
+        ),
         "Create one standalone cinematic image for this exact sub-image moment.",
         f"Scene {scene_number}, sub-image {prompt_index}.",
     ]
-
+    
     if sub_text:
         parts.append(f"SUB-IMAGE TEXT: {sub_text}")
 
