@@ -30,26 +30,28 @@ def _build_consistent_image_prompt(
     scene_number,
     prompt_index,
 ):
-    """Build the exact self-contained prompt used for every image request.
+    """Build a self-contained image prompt with the current sub-image first.
 
-    The character bible is sent with every independent API call. A character
-    ID is an application-level consistency key; the actual physical
-    description is also included because the image model does not remember
-    previous API calls.
+    Prompt priority is intentional because Cloudflare keeps only the first
+    1800 characters: the exact sub-image text and image prompt come first,
+    followed by style, character continuity, and broader scene context.
     """
     scene_prompt = (scene_prompt or "").strip()
+    sub_text = (sub_text or "").strip()
+    scene_text = (scene_text or "").strip()
 
     parts = [
-        "Create one standalone image for this exact story moment.",
+        "Create one standalone cinematic image for this exact sub-image moment.",
         f"Scene {scene_number}, sub-image {prompt_index}.",
-        f"FULL SCENE CONTEXT: {scene_text}",
     ]
 
+    # Highest-priority content comes first so it survives the 1800-character
+    # Cloudflare limit whenever truncation is required.
     if sub_text:
-        parts.append(f"SUB-IMAGE LABEL: {sub_text}")
+        parts.append(f"SUB-IMAGE TEXT: {sub_text}")
 
     if scene_prompt:
-        parts.append(f"SCENE: {scene_prompt}")
+        parts.append(f"IMAGE PROMPT: {scene_prompt}")
 
     if style:
         parts.append(f"STYLE: {style}.")
@@ -69,25 +71,23 @@ def _build_consistent_image_prompt(
                         f"CHARACTER: {description}"
                     )
             elif isinstance(details, str) and details.strip():
-                # Backward compatibility with the older JSON schema.
                 character_lines.append(
                     f"{role_name} CHARACTER: {details.strip()}"
                 )
 
     if character_lines:
         parts.append(
-            "KEEP CHARACTER CONSISTENT: "
-            "Preserve every character's face, age, hairstyle, skin tone, "
-            "body proportions, clothing, accessories and identity across "
-            "every scene. Only change pose, expression and action according "
-            "to the current scene.\n"
+            "CHARACTER CONTINUITY: Preserve every character's face, age, "
+            "hairstyle, skin tone, body proportions, clothing, accessories "
+            "and identity across scenes. Only change pose, expression and "
+            "action according to the current moment.\n"
             + "\n".join(character_lines)
         )
-    else:
-        parts.append(
-            "KEEP CHARACTER CONSISTENT: No character bible was provided; "
-            "do not invent persistent character identities."
-        )
+
+    # Broader narration is deliberately last. It provides additional context
+    # without taking priority over the exact sub-image instructions.
+    if scene_text:
+        parts.append(f"BROADER SCENE CONTEXT: {scene_text}")
 
     parts.append(
         "FINAL RULES: Show only the current story moment. Maintain location "
