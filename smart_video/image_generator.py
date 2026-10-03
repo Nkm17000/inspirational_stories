@@ -165,12 +165,6 @@ def _record_image_usage(
         _USAGE["local_fallbacks"] += 1
 
 
-def _estimated_cloudflare_neurons():
-    return (
-        CLOUDFLARE_BASE_NEURONS_PER_TILE
-        + CLOUDFLARE_NEURONS_PER_STEP * CLOUDFLARE_STEPS
-    )
-
 
 
 def get_usage_summary():
@@ -268,6 +262,21 @@ def _save_cloudflare_image(response, path):
     return True
 
 
+CLOUDFLARE_MAX_PROMPT_CHARS = 1800
+
+
+def _truncate_cloudflare_prompt(prompt):
+    """Keep only the first configured number of characters.
+
+    Cloudflare rejects prompts longer than 2048 characters. We keep a
+    safety margin by sending at most 1800 characters.
+    """
+    text = str(prompt or "")
+    if len(text) <= CLOUDFLARE_MAX_PROMPT_CHARS:
+        return text, False
+    return text[:CLOUDFLARE_MAX_PROMPT_CHARS], True
+
+
 def _log_final_api_prompt(prompt, provider="cloudflare"):
     """Append the exact final prompt used for an image API request to a JSONL log."""
     os.makedirs("logs", exist_ok=True)
@@ -311,8 +320,22 @@ def _generate_cloudflare(prompt, path):
         )
         return False
 
+    cloudflare_prompt, was_truncated = _truncate_cloudflare_prompt(prompt)
+
+    if was_truncated:
+        print(
+            f"✂️ Cloudflare prompt truncated: {len(str(prompt))} -> "
+            f"{len(cloudflare_prompt)} characters (first characters kept)",
+            flush=True,
+        )
+    else:
+        print(
+            f"📏 Cloudflare prompt length: {len(cloudflare_prompt)} characters",
+            flush=True,
+        )
+
     prompt_log_path = _log_final_api_prompt(
-        prompt,
+        cloudflare_prompt,
         provider="cloudflare",
     )
 
@@ -355,7 +378,7 @@ def _generate_cloudflare(prompt, path):
         )
 
         payload = {
-            "prompt": prompt,
+            "prompt": cloudflare_prompt,
             "steps": CLOUDFLARE_STEPS,
         }
 
@@ -430,7 +453,7 @@ def _generate_cloudflare(prompt, path):
                             neurons,
                             source,
                             attempt,
-                            final_prompt=prompt,
+                            final_prompt=cloudflare_prompt,
                         )
 
                         # Tracking only. This NEVER controls routing.

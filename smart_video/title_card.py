@@ -15,6 +15,10 @@ from .fonts import find_devanagari_font
 from .voice import clean_tts_text
 from .branding import prepare_round_logo
 
+def _text_height(draw, font, value, stroke=2):
+    bbox = draw.textbbox((0, 0), value, font=font, stroke_width=stroke)
+    return bbox[3] - bbox[1]
+
 def _load_title_template():
     """
     Load the exact poster supplied by the user.
@@ -609,18 +613,9 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
 
         # Calculate actual rendered heights and center each line inside
         # its allocated slot. This prevents long titles from overlapping.
-        def text_height(font, value, stroke=2):
-            bbox = draw.textbbox(
-                (0, 0),
-                value,
-                font=font,
-                stroke_width=stroke
-            )
-            return bbox[3] - bbox[1]
-
-        first_h = text_height(first_font, first)
-        middle_h = text_height(middle_font, middle)
-        last_h = text_height(last_font, last)
+        first_h = _text_height(draw, first_font, first)
+        middle_h = _text_height(draw, middle_font, middle)
+        last_h = _text_height(draw, last_font, last)
 
         first_slot_top = int(height * 0.265)
         first_slot_bottom = int(height * 0.355)
@@ -700,19 +695,10 @@ def create_title_card(title, duration=TITLE_CARD_DURATION):
                 min_size=30
             )
 
-        def text_height(font, value, stroke=2):
-            bbox = draw.textbbox(
-                (0, 0),
-                value,
-                font=font,
-                stroke_width=stroke
-            )
-            return bbox[3] - bbox[1]
-
-        first_h = text_height(first_font, first)
+        first_h = _text_height(draw, first_font, first)
 
         if last:
-            last_h = text_height(last_font, last)
+            last_h = _text_height(draw, last_font, last)
 
             first_slot_top = int(height * 0.285)
             first_slot_bottom = int(height * 0.395)

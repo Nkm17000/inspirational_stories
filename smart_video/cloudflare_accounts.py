@@ -83,12 +83,19 @@ def _collection():
 
 
 def _ensure_index(collection):
+    """Ensure the date/account index exists without conflicting with an existing name.
+
+    MongoDB can already have the same key pattern under another index name.
+    In that case it is already sufficient and must not be recreated.
+    """
     try:
+        required_keys = [("date_utc", 1), ("account_id", 1)]
+        for index in collection.list_indexes():
+            if index.get("key") == dict(required_keys):
+                return
+
         collection.create_index(
-            [
-                ("date_utc", 1),
-                ("account_id", 1),
-            ],
+            required_keys,
             unique=True,
             name="cloudflare_account_day_unique",
         )
