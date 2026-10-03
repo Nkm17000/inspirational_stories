@@ -6,3 +6,4 @@ numpy
 edge-tts
 nest-asyncio
 qrcode[pil]
+deep-translator>=1.11.4

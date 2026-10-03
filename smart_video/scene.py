@@ -1,7 +1,11 @@
 """Scene construction: TTS + images + subtitles."""
 
 import os
+from functools import lru_cache
+
 import numpy as np
+
+from deep_translator import GoogleTranslator
 
 from moviepy.editor import (
     AudioFileClip,
@@ -21,6 +25,82 @@ from .subtitles import create_subtitle
 # IMAGE PROMPT CONTINUITY
 # ============================================================
 
+# ============================================================
+# IMAGE PROMPT LANGUAGE NORMALIZATION
+# ============================================================
+
+@lru_cache(maxsize=2048)
+def _translate_to_english_cached(text):
+    """Translate Devanagari/mixed text to English and cache the result."""
+    text = str(text or "").strip()
+    if not text:
+        return ""
+
+    # Avoid an external translation request when the text is already English.
+    if not any("\u0900" <= ch <= "\u097F" for ch in text):
+        return text
+
+    translated = GoogleTranslator(source="auto", target="en").translate(text)
+    translated = str(translated or "").strip()
+
+    if not translated:
+        raise ValueError("English translation returned an empty result")
+
+    return translated
+
+
+def _translate_to_english(text):
+    """Translate Hindi/mixed prompt text to English; keep English unchanged."""
+    text = str(text or "").strip()
+    if not text:
+        return ""
+
+    if not any("\u0900" <= ch <= "\u097F" for ch in text):
+        return text
+
+    try:
+        return _translate_to_english_cached(text)
+    except Exception as exc:
+        raise RuntimeError(
+            f"English translation failed for image prompt: {exc}"
+        ) from exc
+
+
+def _contains_devanagari(text):
+    return any("\u0900" <= ch <= "\u097F" for ch in str(text or ""))
+
+
+def _translate_characters(characters):
+    """Return a copy of the character bible with English names/details."""
+    if not isinstance(characters, dict):
+        return characters
+
+    translated = {}
+    for role, details in characters.items():
+        if isinstance(details, dict):
+            item = dict(details)
+            if item.get("name"):
+                item["name"] = _translate_to_english(item["name"])
+            if item.get("description"):
+                item["description"] = _translate_to_english(item["description"])
+            translated[role] = item
+        elif isinstance(details, str):
+            translated[role] = _translate_to_english(details)
+        else:
+            translated[role] = details
+
+    return translated
+
+
+def _ensure_english_prompt(text, label):
+    """Never send Devanagari characters to an image-generation API."""
+    if _contains_devanagari(text):
+        raise ValueError(
+            f"{label} still contains Hindi/Devanagari text after translation"
+        )
+    return str(text or "").strip()
+
+
 def _build_consistent_image_prompt(
     scene_text,
     sub_text,
@@ -36,9 +116,16 @@ def _build_consistent_image_prompt(
     1800 characters: the exact sub-image text and image prompt come first,
     followed by style, character continuity, and broader scene context.
     """
-    scene_prompt = (scene_prompt or "").strip()
-    sub_text = (sub_text or "").strip()
-    scene_text = (scene_text or "").strip()
+    scene_prompt = _translate_to_english(scene_prompt)
+    sub_text = _translate_to_english(sub_text)
+    scene_text = _translate_to_english(scene_text)
+    characters = _translate_characters(characters)
+    style = _translate_to_english(style)
+
+    scene_prompt = _ensure_english_prompt(scene_prompt, "IMAGE PROMPT")
+    sub_text = _ensure_english_prompt(sub_text, "SUB-IMAGE TEXT")
+    scene_text = _ensure_english_prompt(scene_text, "BROADER SCENE CONTEXT")
+    style = _ensure_english_prompt(style, "STYLE")
 
     parts = [
         "Create one standalone cinematic image for this exact sub-image moment.",
@@ -64,6 +151,8 @@ def _build_consistent_image_prompt(
                 character_id = str(details.get("id", "")).strip()
                 name = str(details.get("name", role_name)).strip()
                 description = str(details.get("description", "")).strip()
+                name = _translate_to_english(name)
+                description = _translate_to_english(description)
                 if character_id or description:
                     character_lines.append(
                         f"{role_name} CHARACTER ID: {character_id} — "
@@ -500,8 +589,9 @@ def create_scene(
         start=1
     ):
 
-        sub_text = item.get("text", "")
+        sub_text = _translate_to_english(item.get("text", ""))
         base_image_prompt = item.get("scene_prompt") or item.get("image_prompt")
+        base_image_prompt = _translate_to_english(base_image_prompt)
 
         if not base_image_prompt:
             raise ValueError(
@@ -510,7 +600,7 @@ def create_scene(
             )
 
         image_prompt = _build_consistent_image_prompt(
-            scene_text=text,
+            scene_text=_translate_to_english(text),
             sub_text=sub_text,
             scene_prompt=base_image_prompt,
             characters=scene.get("characters", {}),
