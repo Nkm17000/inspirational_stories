@@ -19,6 +19,7 @@ from .config import (
     MIN_DURATION,
     VIDEO_SIZE,
     IMAGE_GENERATION_SLEEP_SECONDS,
+    TRANSLATION_REQUEST_SLEEP_SECONDS,
 )
 from .voice import clean_tts_text, generate_voice
 from .image_generator import generate_image
@@ -34,9 +35,12 @@ from .subtitles import create_subtitle
 # IMAGE PROMPT LANGUAGE NORMALIZATION
 # ============================================================
 
+_TRANSLATION_FAILURE_CACHE = set()
+
+
 @lru_cache(maxsize=2048)
 def _translate_to_english_cached(text):
-    """Translate Devanagari/mixed text to English and cache the result."""
+    """Translate Devanagari/mixed text to English and cache successful results."""
     text = str(text or "").strip()
     if not text:
         return ""
@@ -45,17 +49,26 @@ def _translate_to_english_cached(text):
     if not any("\u0900" <= ch <= "\u097F" for ch in text):
         return text
 
-    translated = GoogleTranslator(source="auto", target="en").translate(text)
-    translated = str(translated or "").strip()
+    # If this exact text already failed once, keep the original text and do not
+    # repeatedly hit Google Translate for the same value.
+    if text in _TRANSLATION_FAILURE_CACHE:
+        return text
 
-    if not translated:
-        raise ValueError("English translation returned an empty result")
-
-    return translated
+    try:
+        translated = GoogleTranslator(source="auto", target="en").translate(text)
+        translated = str(translated or "").strip()
+        if not translated:
+            raise ValueError("English translation returned an empty result")
+        return translated
+    finally:
+        # The delay is intentionally applied after every actual translation
+        # request, including failed requests, to reduce rate-limit pressure.
+        if TRANSLATION_REQUEST_SLEEP_SECONDS > 0:
+            time.sleep(TRANSLATION_REQUEST_SLEEP_SECONDS)
 
 
 def _translate_to_english(text):
-    """Translate Hindi/mixed prompt text to English; keep English unchanged."""
+    """Best-effort translation; translation failure must never stop the job."""
     text = str(text or "").strip()
     if not text:
         return ""
@@ -64,11 +77,18 @@ def _translate_to_english(text):
         return text
 
     try:
-        return _translate_to_english_cached(text)
+        translated = _translate_to_english_cached(text)
+        if translated:
+            return translated
     except Exception as exc:
-        raise RuntimeError(
-            f"English translation failed for image prompt: {exc}"
-        ) from exc
+        _TRANSLATION_FAILURE_CACHE.add(text)
+        print(
+            f"⚠️ Optional English translation skipped: {exc}. "
+            "Continuing with the original text.",
+            flush=True,
+        )
+
+    return text
 
 
 def _contains_devanagari(text):
@@ -76,7 +96,7 @@ def _contains_devanagari(text):
 
 
 def _translate_characters(characters):
-    """Return a copy of the character bible with English names/details."""
+    """Return a copy of the character bible with best-effort English text."""
     if not isinstance(characters, dict):
         return characters
 
@@ -98,97 +118,15 @@ def _translate_characters(characters):
 
 
 def _ensure_english_prompt(text, label):
-    """Never send Devanagari characters to an image-generation API."""
+    """Keep the best available prompt; translation is optional, not fatal."""
+    text = str(text or "").strip()
     if _contains_devanagari(text):
-        raise ValueError(
-            f"{label} still contains Hindi/Devanagari text after translation"
+        print(
+            f"⚠️ {label} still contains Hindi/Devanagari text because optional "
+            "translation was unavailable. Continuing with the original text.",
+            flush=True,
         )
-    return str(text or "").strip()
-
-
-def _build_consistent_image_prompt(
-    scene_text,
-    sub_text,
-    scene_prompt,
-    characters,
-    style,
-    scene_number,
-    prompt_index,
-):
-    """Build a self-contained image prompt with the current sub-image first.
-
-    Prompt priority is intentional because Cloudflare keeps only the first
-    1800 characters: the exact sub-image text and image prompt come first,
-    followed by style, character continuity, and broader scene context.
-    """
-    scene_prompt = _translate_to_english(scene_prompt)
-    sub_text = _translate_to_english(sub_text)
-    scene_text = _translate_to_english(scene_text)
-    characters = _translate_characters(characters)
-    style = _translate_to_english(style)
-
-    scene_prompt = _ensure_english_prompt(scene_prompt, "IMAGE PROMPT")
-    sub_text = _ensure_english_prompt(sub_text, "SUB-IMAGE TEXT")
-    scene_text = _ensure_english_prompt(scene_text, "BROADER SCENE CONTEXT")
-    style = _ensure_english_prompt(style, "STYLE")
-
-    parts = [
-        "Create one standalone cinematic image for this exact sub-image moment.",
-        f"Scene {scene_number}, sub-image {prompt_index}.",
-    ]
-
-    # Highest-priority content comes first so it survives the 1800-character
-    # Cloudflare limit whenever truncation is required.
-    if sub_text:
-        parts.append(f"SUB-IMAGE TEXT: {sub_text}")
-
-    if scene_prompt:
-        parts.append(f"IMAGE PROMPT: {scene_prompt}")
-
-    if style:
-        parts.append(f"STYLE: {style}.")
-
-    character_lines = []
-    if isinstance(characters, dict):
-        for role, details in characters.items():
-            role_name = str(role).strip().upper()
-            if isinstance(details, dict):
-                character_id = str(details.get("id", "")).strip()
-                name = str(details.get("name", role_name)).strip()
-                description = str(details.get("description", "")).strip()
-                name = _translate_to_english(name)
-                description = _translate_to_english(description)
-                if character_id or description:
-                    character_lines.append(
-                        f"{role_name} CHARACTER ID: {character_id} — "
-                        f"always use the same {name} character. "
-                        f"CHARACTER: {description}"
-                    )
-            elif isinstance(details, str) and details.strip():
-                character_lines.append(
-                    f"{role_name} CHARACTER: {details.strip()}"
-                )
-
-    if character_lines:
-        parts.append(
-            "CHARACTER CONTINUITY: Preserve every character's face, age, "
-            "hairstyle, skin tone, body proportions, clothing, accessories "
-            "and identity across scenes. Only change pose, expression and "
-            "action according to the current moment.\n"
-            + "\n".join(character_lines)
-        )
-
-    # Broader narration is deliberately last. It provides additional context
-    # without taking priority over the exact sub-image instructions.
-    if scene_text:
-        parts.append(f"BROADER SCENE CONTEXT: {scene_text}")
-
-    parts.append(
-        "FINAL RULES: Show only the current story moment. Maintain location "
-        "and visual continuity. No text, subtitles, captions, logo or watermark."
-    )
-
-    return "\n\n".join(parts)
+    return text
 
 
 # ============================================================

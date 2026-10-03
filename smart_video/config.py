@@ -15,6 +15,13 @@ IMAGE_GENERATION_SLEEP_SECONDS = max(
     float(os.getenv("IMAGE_GENERATION_SLEEP_SECONDS", "5"))
 )
 
+# Pause after each external translation request. Translation is optional, so
+# failures fall back to the original text without stopping video generation.
+TRANSLATION_REQUEST_SLEEP_SECONDS = max(
+    0.0,
+    float(os.getenv("TRANSLATION_REQUEST_SLEEP_SECONDS", "2"))
+)
+
 # Branding
 LOGO_PATH = os.getenv("LOGO_PATH", "logo.png")
 LOGO_SIZE = int(os.getenv("LOGO_SIZE", "125"))
