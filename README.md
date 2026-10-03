@@ -131,11 +131,11 @@ Use a story-level `characters` dictionary as the character bible. Character phys
       "sub_image_prompts": [
         {
           "text": "मीरा चित्र बनाती हुई",
-          "scene_prompt": "Meera is sitting on a wooden chair inside a simple Indian home, quietly drawing in a sketchbook near a window, looking thoughtful and slightly emotional."
+          "scene_prompt": "COMIC STYLE LOCK: 2D cartoon/comic characters only, never photorealistic or real-looking humans. Consistent illustrated style. Meera is sitting on a wooden chair inside a simple Indian home, quietly drawing in a sketchbook near a window, looking thoughtful and slightly emotional."
         },
         {
           "text": "मीरा अपना चित्र छिपाती हुई",
-          "scene_prompt": "Meera quietly closes her sketchbook and places it inside a wooden drawer, looking nervous and hesitant, with the same home interior visible around her."
+          "scene_prompt": "COMIC STYLE LOCK: 2D cartoon/comic characters only, never photorealistic or real-looking humans. Consistent illustrated style. Meera quietly closes her sketchbook and places it inside a wooden drawer, looking nervous and hesitant, with the same home interior visible around her."
         }
       ]
     },
@@ -145,11 +145,11 @@ Use a story-level `characters` dictionary as the character bible. Character phys
       "sub_image_prompts": [
         {
           "text": "सरला मीरा से बात करती हुई",
-          "scene_prompt": "Meera is sitting with Sarla in the same simple Indian home, listening carefully as Sarla speaks to her with a warm encouraging expression."
+          "scene_prompt": "COMIC STYLE LOCK: 2D cartoon/comic characters only, never photorealistic or real-looking humans. Consistent illustrated style. Meera is sitting with Sarla in the same simple Indian home, listening carefully as Sarla speaks to her with a warm encouraging expression."
         },
         {
           "text": "मीरा आत्मविश्वास से मुस्कुराती हुई",
-          "scene_prompt": "Meera stands near the window holding her sketchbook, looking calmer and more confident after speaking with Sarla."
+          "scene_prompt": "COMIC STYLE LOCK: 2D cartoon/comic characters only, never photorealistic or real-looking humans. Consistent illustrated style. Meera stands near the window holding her sketchbook, looking calmer and more confident after speaking with Sarla."
         }
       ]
     }

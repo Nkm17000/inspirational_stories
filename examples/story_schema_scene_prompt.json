@@ -24,11 +24,11 @@
       "sub_image_prompts": [
         {
           "text": "मीरा अपने कमरे में चित्र बनाती हुई",
-          "scene_prompt": "Meera is sitting at a small wooden table inside a simple Indian home, drawing carefully in a sketchbook. She looks focused but slightly nervous. Morning light enters through a nearby window."
+          "scene_prompt": "COMIC STYLE LOCK: 2D cartoon/comic characters only, never photorealistic or real-looking humans. Consistent illustrated style. Meera is sitting at a small wooden table inside a simple Indian home, drawing carefully in a sketchbook. She looks focused but slightly nervous. Morning light enters through a nearby window."
         },
         {
           "text": "मीरा अपना चित्र छिपाती हुई",
-          "scene_prompt": "Meera quietly closes her sketchbook and places it inside a wooden drawer, looking hesitant and worried. The room is simple and modest, with everyday Indian household details."
+          "scene_prompt": "COMIC STYLE LOCK: 2D cartoon/comic characters only, never photorealistic or real-looking humans. Consistent illustrated style. Meera quietly closes her sketchbook and places it inside a wooden drawer, looking hesitant and worried. The room is simple and modest, with everyday Indian household details."
         }
       ]
     }
