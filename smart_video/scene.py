@@ -2,11 +2,8 @@
 
 import os
 import time
-from functools import lru_cache
 
 import numpy as np
-
-from deep_translator import GoogleTranslator
 
 from moviepy.editor import (
     AudioFileClip,
@@ -19,7 +16,6 @@ from .config import (
     MIN_DURATION,
     VIDEO_SIZE,
     IMAGE_GENERATION_SLEEP_SECONDS,
-    TRANSLATION_REQUEST_SLEEP_SECONDS,
 )
 from .voice import clean_tts_text, generate_voice
 from .image_generator import generate_image
@@ -31,102 +27,77 @@ from .subtitles import create_subtitle
 # IMAGE PROMPT CONTINUITY
 # ============================================================
 
-# ============================================================
-# IMAGE PROMPT LANGUAGE NORMALIZATION
-# ============================================================
+def _build_consistent_image_prompt(
+    scene_text,
+    sub_text,
+    scene_prompt,
+    characters,
+    style,
+    scene_number,
+    prompt_index,
+):
+    """Build a self-contained image prompt with the current sub-image first.
 
-_TRANSLATION_FAILURE_CACHE = set()
+    The exact sub-image text and image prompt are placed first so they have
+    highest priority when the Cloudflare API prompt is limited to 1800
+    characters. Translation is intentionally not performed here.
+    """
+    scene_prompt = str(scene_prompt or "").strip()
+    sub_text = str(sub_text or "").strip()
+    scene_text = str(scene_text or "").strip()
+    style = str(style or "").strip()
 
+    parts = [
+        "Create one standalone cinematic image for this exact sub-image moment.",
+        f"Scene {scene_number}, sub-image {prompt_index}.",
+    ]
 
-@lru_cache(maxsize=2048)
-def _translate_to_english_cached(text):
-    """Translate Devanagari/mixed text to English and cache successful results."""
-    text = str(text or "").strip()
-    if not text:
-        return ""
+    if sub_text:
+        parts.append(f"SUB-IMAGE TEXT: {sub_text}")
 
-    # Avoid an external translation request when the text is already English.
-    if not any("\u0900" <= ch <= "\u097F" for ch in text):
-        return text
+    if scene_prompt:
+        parts.append(f"IMAGE PROMPT: {scene_prompt}")
 
-    # If this exact text already failed once, keep the original text and do not
-    # repeatedly hit Google Translate for the same value.
-    if text in _TRANSLATION_FAILURE_CACHE:
-        return text
+    if style:
+        parts.append(f"STYLE: {style}.")
 
-    try:
-        translated = GoogleTranslator(source="auto", target="en").translate(text)
-        translated = str(translated or "").strip()
-        if not translated:
-            raise ValueError("English translation returned an empty result")
-        return translated
-    finally:
-        # The delay is intentionally applied after every actual translation
-        # request, including failed requests, to reduce rate-limit pressure.
-        if TRANSLATION_REQUEST_SLEEP_SECONDS > 0:
-            time.sleep(TRANSLATION_REQUEST_SLEEP_SECONDS)
+    character_lines = []
+    if isinstance(characters, dict):
+        for role, details in characters.items():
+            role_name = str(role).strip().upper()
+            if isinstance(details, dict):
+                character_id = str(details.get("id", "")).strip()
+                name = str(details.get("name", role_name)).strip()
+                description = str(details.get("description", "")).strip()
+                if character_id or description:
+                    character_lines.append(
+                        f"{role_name} CHARACTER ID: {character_id} — "
+                        f"always use the same {name} character. "
+                        f"CHARACTER: {description}"
+                    )
+            elif isinstance(details, str) and details.strip():
+                character_lines.append(
+                    f"{role_name} CHARACTER: {details.strip()}"
+                )
 
-
-def _translate_to_english(text):
-    """Best-effort translation; translation failure must never stop the job."""
-    text = str(text or "").strip()
-    if not text:
-        return ""
-
-    if not any("\u0900" <= ch <= "\u097F" for ch in text):
-        return text
-
-    try:
-        translated = _translate_to_english_cached(text)
-        if translated:
-            return translated
-    except Exception as exc:
-        _TRANSLATION_FAILURE_CACHE.add(text)
-        print(
-            f"⚠️ Optional English translation skipped: {exc}. "
-            "Continuing with the original text.",
-            flush=True,
+    if character_lines:
+        parts.append(
+            "CHARACTER CONTINUITY: Preserve every character's face, age, "
+            "hairstyle, skin tone, body proportions, clothing, accessories "
+            "and identity across scenes. Only change pose, expression and "
+            "action according to the current moment.\n"
+            + "\n".join(character_lines)
         )
 
-    return text
+    if scene_text:
+        parts.append(f"BROADER SCENE CONTEXT: {scene_text}")
 
+    parts.append(
+        "FINAL RULES: Show only the current story moment. Maintain location "
+        "and visual continuity. No text, subtitles, captions, logo or watermark."
+    )
 
-def _contains_devanagari(text):
-    return any("\u0900" <= ch <= "\u097F" for ch in str(text or ""))
-
-
-def _translate_characters(characters):
-    """Return a copy of the character bible with best-effort English text."""
-    if not isinstance(characters, dict):
-        return characters
-
-    translated = {}
-    for role, details in characters.items():
-        if isinstance(details, dict):
-            item = dict(details)
-            if item.get("name"):
-                item["name"] = _translate_to_english(item["name"])
-            if item.get("description"):
-                item["description"] = _translate_to_english(item["description"])
-            translated[role] = item
-        elif isinstance(details, str):
-            translated[role] = _translate_to_english(details)
-        else:
-            translated[role] = details
-
-    return translated
-
-
-def _ensure_english_prompt(text, label):
-    """Keep the best available prompt; translation is optional, not fatal."""
-    text = str(text or "").strip()
-    if _contains_devanagari(text):
-        print(
-            f"⚠️ {label} still contains Hindi/Devanagari text because optional "
-            "translation was unavailable. Continuing with the original text.",
-            flush=True,
-        )
-    return text
+    return "\n\n".join(parts)
 
 
 # ============================================================
@@ -532,9 +503,9 @@ def create_scene(
         start=1
     ):
 
-        sub_text = _translate_to_english(item.get("text", ""))
+        sub_text = str(item.get("text", "") or "").strip()
         base_image_prompt = item.get("scene_prompt") or item.get("image_prompt")
-        base_image_prompt = _translate_to_english(base_image_prompt)
+        base_image_prompt = str(base_image_prompt or "").strip()
 
         if not base_image_prompt:
             raise ValueError(
@@ -543,7 +514,7 @@ def create_scene(
             )
 
         image_prompt = _build_consistent_image_prompt(
-            scene_text=_translate_to_english(text),
+            scene_text=text,
             sub_text=sub_text,
             scene_prompt=base_image_prompt,
             characters=scene.get("characters", {}),

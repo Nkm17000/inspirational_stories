@@ -1,9 +1,62 @@
-moviepy==1.0.3
-Pillow==9.5.0
-pymongo
-requests
-numpy
-edge-tts
-nest-asyncio
-qrcode[pil]
-deep-translator>=1.11.4
+# MongoDB
+MONGODB_URI=
+
+# Optional story selector; leave empty to process the next PENDING story
+STORY_ID=
+
+# Cloudflare Workers AI image generation
+# Configure one or more accounts. Numbered accounts are tried in order.
+CLOUDFLARE_ACCOUNT_ID_1=
+CLOUDFLARE_API_TOKEN_1=
+CLOUDFLARE_ACCOUNT_ID_2=
+CLOUDFLARE_API_TOKEN_2=
+CLOUDFLARE_ACCOUNT_ID_3=
+CLOUDFLARE_API_TOKEN_3=
+CLOUDFLARE_ACCOUNT_ID_4=
+CLOUDFLARE_API_TOKEN_4=
+CLOUDFLARE_ACCOUNT_ID_5=
+CLOUDFLARE_API_TOKEN_5=
+
+CLOUDFLARE_IMAGE_MODEL=@cf/black-forest-labs/flux-1-schnell
+CLOUDFLARE_IMAGE_STEPS=1
+CLOUDFLARE_IMAGE_RETRIES=2
+CLOUDFLARE_IMAGE_TIMEOUT=120
+
+# Usage tracking only. There is NO neuron limit or neuron threshold.
+CLOUDFLARE_USAGE_COLLECTION=cloudflare_daily_usage
+CLOUDFLARE_BASE_NEURONS_PER_TILE=4.8
+CLOUDFLARE_NEURONS_PER_STEP=9.6
+
+# Pollinations fallback
+POLLINATIONS_IMAGE_RETRIES=3
+POLLINATIONS_IMAGE_TIMEOUT=30
+
+# Facebook Page
+FB_PAGE_ID=
+FB_PAGE_ACCESS_TOKEN=
+FB_GRAPH_API_VERSION=v24.0
+FB_VIDEO_PATH=final_video.mp4
+FB_POST_TITLE=Smart Learning Lab - New Story
+FB_POST_DESCRIPTION=Watch this inspiring story from Smart Learning Lab.
+
+# Instagram Professional Account
+INSTAGRAM_BUSINESS_ACCOUNT_ID=
+INSTAGRAM_ACCESS_TOKEN=
+META_GRAPH_VERSION=v23.0
+
+# Social publisher
+SOCIAL_VIDEO_PATH=final_video.mp4
+STORY_TITLE=Smart Learning Lab - New Story
+
+# Video / branding
+CTA_URL=https://www.facebook.com/thesmartlearninglab
+LOGO_PATH=logo.png
+LOGO_SIZE=125
+LOGO_MARGIN=18
+END_CARD_DURATION=5
+TITLE_CARD_DURATION=2
+TITLE_TEMPLATE_PATH=assets/title_page_template.png
+
+# Pause after each completed image generation (seconds)
+IMAGE_GENERATION_SLEEP_SECONDS=5
+
