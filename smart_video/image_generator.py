@@ -172,6 +172,54 @@ def _estimated_cloudflare_neurons():
     )
 
 
+
+def get_usage_summary():
+    """Return the current story image/provider usage.
+
+    Neuron values are reporting-only. They never control Cloudflare
+    account selection, fallback routing, or image generation.
+    """
+    estimated = round(_USAGE["estimated_cloudflare_neurons"], 2)
+    reported = round(_USAGE["reported_cloudflare_neurons"], 2)
+    total_known = round(estimated + reported, 2)
+
+    return {
+        **_USAGE,
+        "estimated_cloudflare_neurons": estimated,
+        "reported_cloudflare_neurons": reported,
+        "total_cloudflare_neurons": total_known,
+        "note": (
+            "Neuron values are tracking estimates/reporting only. "
+            "They are never used as a routing or quota limit. "
+            "Check the Cloudflare dashboard for authoritative billed usage."
+        ),
+    }
+
+
+def save_usage_report(output_dir="logs"):
+    """Write a machine-readable per-image and story-level usage report."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    story_id = _USAGE.get("story_id") or "unknown"
+    safe_id = "".join(
+        c if c.isalnum() or c in "-_" else "_"
+        for c in str(story_id)
+    )
+
+    path = os.path.join(
+        output_dir,
+        f"neuron_usage_{safe_id}.json",
+    )
+
+    report = get_usage_summary()
+    report["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    return path, report
+
+
 # ============================================================
 # HELPERS
 # ============================================================
